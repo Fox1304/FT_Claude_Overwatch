@@ -1,0 +1,32 @@
+{
+  "name": "overview",
+  "version": "1.0.0",
+  "description": "What Claude is doing now and what needs you, as cards of selectable text, with a note box on every item; plus the steps only you can take",
+  "author": {
+    "name": "Fox1304",
+    "url": "https://github.com/Fox1304"
+  },
+  "homepage": "https://github.com/Fox1304/FT_Claude_Overwatch",
+  "repository": "https://github.com/Fox1304/FT_Claude_Overwatch",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "mod",
+    "hooks"
+  ],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "pickupAfterSeconds": {
+      "type": "number",
+      "title": "Pick up ticked steps after (seconds)",
+      "description": "How long after your last tick Claude, if idle, starts on its own to confirm your ticked steps. 0: never on its own, only with your next message.",
+      "default": 30
+    },
+    "phoneAlerts": {
+      "type": "boolean",
+      "title": "Phone alerts for your steps",
+      "description": "Tell your phone when Claude adds a step only you can take, or reopens one (sent only when you are away from the session).",
+      "default": true
+    }
+  }
+}

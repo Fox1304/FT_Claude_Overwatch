@@ -1,0 +1,16 @@
+{
+  "name": "claude-overwatch",
+  "description": "A Claude Code mod: a pane of what Claude is doing, what comes next and what needs you, in plain words.",
+  "owner": {
+    "name": "Fox1304",
+    "url": "https://github.com/Fox1304"
+  },
+  "plugins": [
+    {
+      "name": "overview",
+      "source": "./",
+      "description": "What Claude is doing now and what needs you, as cards of selectable text, with a note box on every item; plus the steps only you can take",
+      "version": "1.0.0"
+    }
+  ]
+}
