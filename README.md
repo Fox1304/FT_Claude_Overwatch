@@ -39,7 +39,14 @@ In a **terminal** Claude Code session (the desktop app's Code tab does not offer
 
 Answer `y` to add the marketplace, then pick the **user** scope so it loads in every project. The mod is active at once in that session, and in every session started afterwards, including the desktop app.
 
-To remove it: `/plugin uninstall overview`.
+Or from a shell, with the same result:
+
+```
+claude plugin marketplace add Fox1304/FT_Claude_Overwatch
+claude plugin install overview@claude-overwatch --scope user
+```
+
+To remove it: `/plugin uninstall overview`, or `claude plugin uninstall overview@claude-overwatch`.
 
 ### Run it from a clone instead
 
