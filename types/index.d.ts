@@ -61,12 +61,24 @@ export type YourStep = {
   tickedFrom?: string
   tickedAt?: number
   doneAt?: number
-  /** When the person archived it as no longer relevant: hidden from the active list, restorable. */
+  /** When it was archived: hidden from the active list, kept, restorable. Nothing is ever deleted. */
   archivedAt?: number
+  /** Who archived it: the person, Claude (done or obsolete only), or the pane itself once a confirmed step is a week old. */
+  archivedBy?: ArchivedBy
+  /** Why, when Claude or the pane archived it: "done", or what made it obsolete. */
+  archivedWhy?: string
   /** Whether Claude last heard it as archived; a step whose archive state differs is waiting to be told. */
   heardArchived?: boolean
   createdAt: number
 }
+
+export type ArchivedBy = 'you' | 'claude' | 'auto'
+
+/** The last archive, for its undo: which steps, of which project, by whom. */
+export type LastArchive = { key: string; ids: string[]; titles: string[]; by: 'you' | 'claude'; at: number }
+
+/** What the Your move list is narrowed to. */
+export type StepFilter = 'all' | 'decide' | 'overdue' | 'week' | 'later' | 'ticked' | 'archived'
 
 /** A stage of the project, on the map's timeline. */
 export type Milestone = {
@@ -166,6 +178,12 @@ declare module 'claude-code' {
       unfolded: string[]
       /** The steps whose "more" the person opened. */
       openSteps: string[]
+      /** The last archive, until it is undone or another replaces it. */
+      lastArchive: LastArchive | null
+      /** What the person searches Your move for. */
+      stepSearch: string
+      /** What Your move is narrowed to. */
+      stepFilter: StepFilter
       /** This project's map, as last read from the store. */
       projectMap: ProjectMap
       /** This project's recent changes, newest first. */

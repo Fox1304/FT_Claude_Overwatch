@@ -64,8 +64,8 @@ test('a restored step comes back as it was, and Claude hears both moves', async 
   expect(w.prompts[0]?.text).not.toContain('Pay the Play Console fee')
 
   const listed = String((await $.tool.call({ tool: STEPS_TOOL })).result)
-  expect(listed).toContain('Archived by the person as no longer relevant')
-  expect(listed.split('Archived by the person')[0]).not.toContain('Approve the new Apple agreement')
+  expect(listed).toContain('Archived, kept and restorable by the person')
+  expect(listed.split('Archived, kept')[0]).not.toContain('Approve the new Apple agreement')
 
   await unfold(ui, 'archived')
   await ui.press({ key: `restore:${apple?.id}` })

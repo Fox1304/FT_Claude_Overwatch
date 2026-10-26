@@ -1,17 +1,16 @@
-import type { Goal, StepLink, YourStep, YourStepStatus } from '../types'
+import type { Goal, StepFilter, StepLink, YourStep, YourStepStatus } from '../types'
 
 export const YOUR_STEPS_TOOL = 'mcp__overview__your_steps'
 export const STORE_PREFIX = 'yourSteps:'
 
 /** Confirmed steps stay this long, then leave the list. */
 const DONE_KEPT_MS = 7 * 24 * 60 * 60 * 1000
-const MAX_STEPS = 60
 const DAY_MS = 24 * 60 * 60 * 1000
 const DATE = /^\d{4}-\d{2}-\d{2}$/
 
 export const YOUR_STEPS_DESCRIPTION = [
   "Keeps the list of steps only the person can take (a sign-in, a payment, a decision, a check on their phone) in the Overview pane, per project and across sessions.",
-  'The person ticks a step when it is done. "add" new steps, "confirm" ticked ones you have checked (saying how), "reopen" one that is not done yet with a note, "remove" one no longer needed.',
+  'The person ticks a step when it is done. "add" new steps, "confirm" ticked ones you have checked (saying how), "reopen" one that is not done yet with a note, "archive" one that is done or obsolete (kept, and the person can restore it).',
   'Every call answers the current list with ids; call it with nothing to read the list.',
 ].join(' ')
 
@@ -116,7 +115,20 @@ export const YOUR_STEPS_SCHEMA = {
         required: ['id', 'note'],
       },
     },
-    remove: { type: 'array', items: { type: 'string' }, description: 'Ids of steps no longer needed.' },
+    archive: {
+      type: 'array',
+      description: 'Steps to archive, kept and restorable by the person: only a confirmed step ("done"), or one that no longer applies ("obsolete", with "note" saying why).',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          why: { type: 'string', enum: ['done', 'obsolete'] },
+          note: { type: 'string', description: 'For "obsolete": what made it no longer needed, in plain words.' },
+        },
+        required: ['id', 'why'],
+      },
+    },
+    remove: { type: 'array', items: { type: 'string' }, description: 'Ids of steps no longer needed: archived as obsolete, never deleted.' },
   },
 }
 
@@ -133,7 +145,7 @@ Do every step you can yourself. When one truly needs the person (a sign-in or 2F
 - Give each step "more" (what it is, why now, how, and how you will confirm it) and "sources" (the document sections or pages with the details), so the person can open it in the pane. Keep them current with "update" when things change.
 - The pane's « Your move » shows decisions, what is overdue or due within a week, and steps added in the last day; everything else folds under « Later ». Give "due" to any step that should happen soon, so it stays in front.
 - The person can archive a step they no longer need (« The person archived… » reaches you) and restore it later. Stop waiting on an archived step and do not add it again; the list you read shows the archive apart.
-- "remove" a step that is no longer needed. Call the tool with nothing to read the list.`
+- "archive" a step once it is confirmed done ("why": "done") or no longer applies ("why": "obsolete", with a "note" saying why); never any other step. Nothing is deleted: the person sees an undo and can restore it. Call the tool with nothing to read the list.`
 
 /** A source as Claude gives it, before it becomes a link. */
 export type Source = { label: string; url?: string; path?: string; heading?: string; line?: number; ref?: string }
@@ -162,7 +174,8 @@ export type YourStepsOps = {
   update: StepChange[]
   confirm: { id: string; checked?: string }[]
   reopen: { id: string; note: string }[]
-  remove: string[]
+  /** Claude's archives; "remove" arrives here as obsolete, so nothing is ever deleted. */
+  archive: { id: string; why: 'done' | 'obsolete'; note?: string }[]
 }
 
 const text = (value: unknown) => (typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined)
@@ -254,11 +267,25 @@ export const parseOps = (raw: Record<string, unknown>): YourStepsOps => ({
 
     return id === undefined || note === undefined ? [] : [{ id, note }]
   }),
-  remove: rows(raw.remove).flatMap(row => (text(row.id) === undefined ? [] : [text(row.id) as string])),
+  archive: [
+    ...rows(raw.archive).flatMap(row => {
+      const id = text(row.id)
+      const why: 'done' | 'obsolete' | undefined = row.why === 'done' || row.why === 'obsolete' ? row.why : undefined
+      const note = text(row.note)
+      if (id === undefined || why === undefined) return []
+
+      return [note === undefined ? { id, why } : { id, why, note: note.slice(0, 200) }] as { id: string; why: 'done' | 'obsolete'; note?: string }[]
+    }),
+    ...rows(raw.remove).flatMap(row => {
+      const id = text(row.id)
+
+      return id === undefined ? [] : [{ id, why: 'obsolete' as const, note: 'no longer needed' }]
+    }),
+  ],
 })
 
 export const isEmpty = (ops: YourStepsOps) =>
-  ops.add.length + ops.update.length + ops.confirm.length + ops.reopen.length + ops.remove.length === 0
+  ops.add.length + ops.update.length + ops.confirm.length + ops.reopen.length + ops.archive.length === 0
 
 /** GitHub's anchor for a heading: lower case, punctuation dropped, spaces as hyphens. */
 export const slugify = (heading: string) =>
@@ -304,12 +331,11 @@ export const applyOps = (
   ops: YourStepsOps,
   now: number,
   newId: () => string,
-): { list: YourStep[]; unknown: string[]; added: YourStep[] } => {
+): { list: YourStep[]; unknown: string[]; added: YourStep[]; archived: YourStep[]; refused: { id: string; reason: string }[] } => {
   const known = new Set(list.map(step => step.id))
-  const unknown = [...ops.update.map(one => one.id), ...ops.confirm.map(one => one.id), ...ops.reopen.map(one => one.id), ...ops.remove].filter(
+  const unknown = [...ops.update.map(one => one.id), ...ops.confirm.map(one => one.id), ...ops.reopen.map(one => one.id), ...ops.archive.map(one => one.id)].filter(
     id => !known.has(id),
   )
-  const removed = new Set(ops.remove)
   const confirmed = new Map(ops.confirm.map(one => [one.id, one.checked]))
   const reopened = new Map(ops.reopen.map(one => [one.id, one.note]))
 
@@ -326,7 +352,6 @@ export const applyOps = (
   })
 
   const kept = changed.flatMap(step => {
-    if (removed.has(step.id)) return []
     if (confirmed.has(step.id)) {
       const { note: _note, ...rest } = step
       const checked = confirmed.get(step.id)
@@ -342,11 +367,33 @@ export const applyOps = (
 
     return [step]
   })
+  // Claude archives only what is done (confirmed, in this call or before) or obsolete (with a reason); nothing is deleted.
+  const refused: { id: string; reason: string }[] = []
+  const archived: YourStep[] = []
+  const wanted = new Map(ops.archive.map(one => [one.id, one]))
+  const shelved = kept.map(step => {
+    const ask = wanted.get(step.id)
+    if (ask === undefined || isArchived(step)) return step
+    if (ask.why === 'done' && step.status !== 'done') {
+      refused.push({ id: step.id, reason: 'not confirmed yet: confirm it first, or archive it as obsolete with a note' })
+
+      return step
+    }
+    if (ask.why === 'obsolete' && ask.note === undefined) {
+      refused.push({ id: step.id, reason: 'an obsolete step needs a "note" saying why' })
+
+      return step
+    }
+    const next: YourStep = { ...step, archivedAt: now, archivedBy: 'claude', archivedWhy: ask.why === 'done' ? 'done' : (ask.note ?? 'obsolete'), heardArchived: true }
+    archived.push(next)
+
+    return next
+  })
   const added: YourStep[] = ops.add
-    .filter(one => !kept.some(step => step.status !== 'done' && !isArchived(step) && step.title.toLowerCase() === one.title.toLowerCase()))
+    .filter(one => !shelved.some(step => step.status !== 'done' && !isArchived(step) && step.title.toLowerCase() === one.title.toLowerCase()))
     .map(({ sources: _sources, ...one }) => ({ ...one, id: newId(), status: 'todo' as const, heard: 'todo' as const, createdAt: now }))
 
-  return { list: [...kept, ...added], unknown, added }
+  return { list: [...shelved, ...added], unknown, added, archived, refused }
 }
 
 /** Whether the person archived the step: out of the active list until restored. */
@@ -362,14 +409,16 @@ export const archivedSteps = (list: readonly YourStep[]) =>
 /** Archives an open step the person no longer needs; nothing is deleted, so it can be restored. */
 export const archiveIn = (list: YourStep[], id: string, session: string, from: string, now: number) =>
   list.map(step =>
-    step.id !== id || step.status === 'done' || isArchived(step) ? step : { ...step, archivedAt: now, tickedIn: session, tickedFrom: from, tickedAt: now },
+    step.id !== id || step.status === 'done' || isArchived(step)
+      ? step
+      : { ...step, archivedAt: now, archivedBy: 'you' as const, tickedIn: session, tickedFrom: from, tickedAt: now },
   )
 
 /** Brings an archived step back to the active list, as it was. */
 export const restoreIn = (list: YourStep[], id: string, session: string, from: string, now: number) =>
   list.map(step => {
     if (step.id !== id || !isArchived(step)) return step
-    const { archivedAt: _archivedAt, ...rest } = step
+    const { archivedAt: _archivedAt, archivedBy: _archivedBy, archivedWhy: _archivedWhy, ...rest } = step
 
     return { ...rest, tickedIn: session, tickedFrom: from, tickedAt: now }
   })
@@ -377,9 +426,13 @@ export const restoreIn = (list: YourStep[], id: string, session: string, from: s
 /** Whether Claude has heard the step's archive state. */
 const archiveHeard = (step: YourStep) => isArchived(step) === (step.heardArchived ?? false)
 
-/** Drops confirmed steps once they are a week old, and keeps the list bounded. */
+/** Moves confirmed steps to the archive once they are a week old. Nothing is ever deleted: every step stays restorable. */
 export const prune = (list: YourStep[], now: number) =>
-  list.filter(step => step.status !== 'done' || now - (step.doneAt ?? now) < DONE_KEPT_MS).slice(-MAX_STEPS)
+  list.map(step =>
+    step.status === 'done' && !isArchived(step) && now - (step.doneAt ?? now) >= DONE_KEPT_MS
+      ? { ...step, archivedAt: now, archivedBy: 'auto' as const, archivedWhy: 'done', heardArchived: true }
+      : step,
+  )
 
 /** Ticks a step, or unticks it; a confirmed step stays confirmed. */
 export const toggle = (list: YourStep[], id: string, session: string, from: string, now: number) =>
@@ -488,7 +541,11 @@ export const noteFor = (all: readonly YourStep[], goals: readonly Goal[] = []) =
 export const describeList = (list: readonly YourStep[]) => {
   const open = activeSteps(list).filter(step => step.status !== 'done')
   const shelved = archivedSteps(list)
-  const archive = shelved.length > 0 ? `\nArchived by the person as no longer relevant (do not add them again):\n${shelved.map(step => `- ${step.id} · ${step.title}`).join('\n')}` : ''
+  const why = (step: YourStep) => (step.archivedBy === 'you' || step.archivedBy === undefined ? 'by the person' : step.archivedWhy === 'done' ? 'done' : `obsolete: ${step.archivedWhy}`)
+  const archive =
+    shelved.length > 0
+      ? `\nArchived, kept and restorable by the person (do not add them again):\n${shelved.slice(0, 20).map(step => `- ${step.id} · ${step.title} (${why(step)})`).join('\n')}${shelved.length > 20 ? `\n… and ${shelved.length - 20} older` : ''}`
+      : ''
   if (open.length === 0) return `No open steps for the person.${archive}`
   const word = (step: YourStep) =>
     step.status === 'checked'
@@ -517,7 +574,7 @@ export const summarizeCall = (input: unknown) => {
     ops.update.length > 0 && `${ops.update.length} updated`,
     ops.confirm.length > 0 && `${ops.confirm.length} confirmed`,
     ops.reopen.length > 0 && `${ops.reopen.length} reopened`,
-    ops.remove.length > 0 && `${ops.remove.length} removed`,
+    ops.archive.length > 0 && `${ops.archive.length} archived`,
   ].filter(Boolean)
 
   return `Your steps · ${parts.length > 0 ? parts.join(', ') : 'checked the list'}`
@@ -660,4 +717,53 @@ export const groupSteps = (steps: readonly YourStep[], now: number): StepGroup[]
   }
 
   return groups.filter(group => group.steps.length > 0)
+}
+
+/** Lower case, accents off: how a search matches. */
+const folded = (text: string) => text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+
+/** Whether a step matches every word searched, in its title, details, answer, options or note. */
+export const matchesSearch = (step: YourStep, search: string) => {
+  const words = folded(search).split(/\s+/).filter(Boolean)
+  if (words.length === 0) return true
+  const haystack = folded([step.title, step.detail, step.more, step.answer, step.asks, step.note, step.checked, step.archivedWhy, ...(step.choices ?? [])].filter(Boolean).join(' '))
+
+  return words.every(word => haystack.includes(word))
+}
+
+/** The filters of Your move, in the order the pane shows them. */
+export const FILTERS: readonly { id: StepFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'decide', label: 'Decisions' },
+  { id: 'overdue', label: 'Overdue' },
+  { id: 'week', label: 'This week' },
+  { id: 'later', label: 'Later' },
+  { id: 'ticked', label: 'Ticked' },
+  { id: 'archived', label: 'Archived' },
+]
+
+/** The steps a filter and a search keep, soonest first: open ones, or the archive for "archived". */
+export const filterSteps = (list: readonly YourStep[], filter: StepFilter, search: string, now: number) => {
+  const today = dayOf(now)
+  const left = (step: YourStep) => (step.due === undefined ? undefined : daysBetween(today, step.due))
+  const pool = filter === 'archived' ? archivedSteps(list) : sortSteps(activeSteps(list).filter(step => step.status !== 'done'))
+  const keep = (step: YourStep) => {
+    const days = left(step)
+    switch (filter) {
+      case 'decide':
+        return step.choices !== undefined && step.status === 'todo'
+      case 'overdue':
+        return days !== undefined && days < 0
+      case 'week':
+        return days !== undefined && days >= 0 && days <= 7
+      case 'later':
+        return days === undefined || days > 7
+      case 'ticked':
+        return step.status === 'checked'
+      default:
+        return true
+    }
+  }
+
+  return pool.filter(step => keep(step) && matchesSearch(step, search))
 }

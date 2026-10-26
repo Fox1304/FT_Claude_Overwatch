@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
 
-import type { Board, Change, Goal, Helper, ItemKind, ItemNote, Milestone, OtherProject, Part, SessionCard, YourStep } from '../types'
+import type { Board, Change, Goal, Helper, ItemKind, ItemNote, LastArchive, Milestone, OtherProject, Part, SessionCard, StepFilter, YourStep } from '../types'
 import { noteLine, noteMessage, noteText, putNote, setNoteStatus, settleNotes } from './notes'
 import {
   CHANGES_PREFIX,
@@ -80,9 +80,11 @@ import {
   toggle,
   unheard,
   waitedText,
+  FILTERS,
   activeSteps,
   archiveIn,
   archivedSteps,
+  filterSteps,
   restoreIn,
 } from './your-steps'
 
@@ -115,6 +117,12 @@ const changes = atom({ plugin: 'overview', key: 'changes' } as const, [])
 const editing = atom({ plugin: 'overview', key: 'editing' } as const, '')
 const editProblem = atom({ plugin: 'overview', key: 'editProblem' } as const, '')
 const notes = atom({ plugin: 'overview', key: 'notes' } as const, [])
+const lastArchive = atom({ plugin: 'overview', key: 'lastArchive' } as const, null)
+const stepSearch = atom({ plugin: 'overview', key: 'stepSearch' } as const, '')
+const stepFilter = atom({ plugin: 'overview', key: 'stepFilter' } as const, 'all')
+
+/** How long the pane offers to undo the last archive; /overview undo works until the next one. */
+const UNDO_MS = 2 * 60_000
 
 /** Tools whose rows are for the person (files, widgets, plans, findings): never hidden. */
 const FOR_THE_PERSON = new Set([
@@ -338,7 +346,49 @@ const archiveStep = async ($: EngineInterface, key: string, id: string) => {
   const now = await $.clock.now()
   const list = await changeStepsAt($, key, steps => archiveIn(steps, id, session, from, now))
   const step = list.find(one => one.id === id)
-  if (step?.archivedAt === now) await recordChanges($, key, [{ at: now, text: `You archived: ${step.title}`, tone: 'you' }])
+  if (step?.archivedAt !== now) return
+  await recordChanges($, key, [{ at: now, text: `You archived: ${step.title}`, tone: 'you' }])
+  await offerUndo($, { key, ids: [id], titles: [step.title], by: 'you', at: now })
+}
+
+/** Keeps the last archive for its undo, and says so in a toast. */
+const offerUndo = async ($: EngineInterface, done: LastArchive) => {
+  await update($, lastArchive, () => done)
+  const what = done.titles.length === 1 ? `« ${done.titles[0]} »` : `${done.titles.length} steps`
+  $.ui.toast(`⊟ ${done.by === 'claude' ? 'Claude archived' : 'Archived'} ${what} · ↺ Undo in the Overview pane, or /overview undo`, { timeoutMs: 8000 })
+}
+
+/** Brings back every step of the last archive, as it was. */
+const undoArchive = async ($: EngineInterface) => {
+  const last = await read($, lastArchive)
+  if (last === null) return 'Nothing to undo: no step was archived since this session started.'
+  const session = await $.session.id()
+  const from = await projectKey($)
+  const now = await $.clock.now()
+  await changeStepsAt($, last.key, steps => last.ids.reduce((list, id) => restoreIn(list, id, session, from, now), steps))
+  await update($, lastArchive, () => null)
+  await recordChanges($, last.key, last.titles.map(title => ({ at: now, text: `You restored: ${title}`, tone: 'you' as const })))
+  const what = last.titles.length === 1 ? `« ${last.titles[0]} »` : `${last.titles.length} steps`
+  $.ui.toast(`↺ Restored ${what}`)
+
+  return `Restored ${what}.`
+}
+
+const dismissUndo = async ($: EngineInterface) => {
+  await update($, lastArchive, () => null)
+}
+
+const setSearch = async ($: EngineInterface, words: string) => {
+  await update($, stepSearch, () => words.slice(0, 120))
+}
+
+const setFilter = async ($: EngineInterface, filter: StepFilter) => {
+  await update($, stepFilter, current => (current === filter ? 'all' : filter))
+}
+
+const clearSearch = async ($: EngineInterface) => {
+  await update($, stepSearch, () => '')
+  await update($, stepFilter, () => 'all')
 }
 
 /** Brings an archived step back to the active list. */
@@ -543,6 +593,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'overview' }, async ($, e) => {
     const [word, value] = e.args.trim().toLowerCase().split(/\s+/)
+    if (word === 'undo') return { text: await undoArchive($) }
     if (word === 'steps') {
       const isShown = await setSteps($, value === 'on' ? true : value === 'off' ? false : undefined)
 
@@ -665,13 +716,17 @@ export const register: Register = (on, options) => {
     const now = await $.clock.now()
     let unknown: string[] = []
     let added: YourStep[] = []
+    let archived: YourStep[] = []
+    let refused: { id: string; reason: string }[] = []
     const before = await loadYourSteps($)
-    const touched = new Set([...ops.update.map(one => one.id), ...ops.remove, ...ops.confirm.map(one => one.id), ...ops.reopen.map(one => one.id)])
+    const touched = new Set([...ops.update.map(one => one.id), ...ops.archive.map(one => one.id), ...ops.confirm.map(one => one.id), ...ops.reopen.map(one => one.id)])
     await settle($, note => note.kind === 'step' && note.stepId !== undefined && touched.has(note.stepId))
     const list = await changeYourSteps($, steps => {
       const applied = applyOps(steps, ops, now, () => crypto.randomUUID().slice(0, 6))
       unknown = applied.unknown
       added = applied.added
+      archived = applied.archived
+      refused = applied.refused
 
       return applied.list
     })
@@ -685,9 +740,13 @@ export const register: Register = (on, options) => {
     await recordChanges($, await projectKey($), [
       ...ops.confirm.flatMap(one => (titleOf(one.id) ? [{ at: now, text: `${titleOf(one.id)} → Done`, tone: 'done' as const }] : [])),
       ...reopened.map(one => ({ at: now, text: `${one.title} → Not done yet`, tone: 'stuck' as const })),
+      ...archived.map(one => ({ at: now, text: `Claude archived: ${one.title} (${one.archivedWhy === 'done' ? 'done' : 'obsolete'})`, tone: 'info' as const })),
     ])
+    if (archived.length > 0) await offerUndo($, { key: await projectKey($), ids: archived.map(one => one.id), titles: archived.map(one => one.title), by: 'claude', at: now })
     const warning =
       (unknown.length > 0 ? `\n\nUnknown ids, nothing changed for them: ${unknown.join(', ')}.` : '') +
+      (refused.length > 0 ? `\n\nNot archived: ${refused.map(one => `${one.id} (${one.reason})`).join('; ')}.` : '') +
+      (archived.length > 0 ? `\n\nArchived: ${archived.map(one => one.id).join(', ')}. The person can undo it.` : '') +
       (dropped.length > 0
         ? `\n\nSources left out (not an https address, or a repository file outside GitHub): ${dropped.join(', ')}.`
         : '')
@@ -863,6 +922,9 @@ export const register: Register = (on, options) => {
     const editBox = await read($, editing)
     const problem = await read($, editProblem)
     const itemNotes = await read($, notes)
+    const undoable = await read($, lastArchive)
+    const search = await read($, stepSearch)
+    const filter = await read($, stepFilter)
     const own = await read($, project)
     const clock = await $.clock.now()
     /** Room inside a card: its border and padding take four cells. */
@@ -1389,8 +1451,81 @@ export const register: Register = (on, options) => {
     const nowCount = callsNow.length + nowGroups.reduce((sum, group) => sum + group.steps.length, 0)
     let hotkeys = 0
     const moveTone: Tone = overdue > 0 ? 'overdue' : callsNow.length > 0 ? 'call' : nowCount > 0 ? 'soon' : 'done'
+    /** An archived step: what it was, who archived it and when, and Restore. */
+    const archivedRow = (step: YourStep) => (
+      <Box key={`archived:${step.id}`} flexDirection="row">
+        <Box key={`archived-title:${step.id}`} flexGrow={1} flexShrink={1}>
+          <Text dimColor wrap="wrap">
+            {step.title} · {step.archivedBy === 'claude' ? `archived by Claude (${step.archivedWhy === 'done' ? 'done' : step.archivedWhy})` : step.archivedBy === 'auto' ? 'confirmed, archived after a week' : 'archived'} {clockText(step.archivedAt ?? clock)}
+          </Text>
+        </Box>
+        <Box key={`restore-at:${step.id}`} marginLeft={1}>
+          <Button key={`restore:${step.id}`} plain label="↺ Restore" onPress={() => restoreStep($, own, step.id)} />
+        </Box>
+      </Box>
+    )
+
+    /** The last archive, offered for undo for a couple of minutes. */
+    const undoShown = undoable !== null && clock - undoable.at < UNDO_MS
+    const undoBar = undoShown && undoable !== null && (
+      <Box key="undo-bar" flexDirection="row" marginTop={1}>
+        <Box key="undo-text" flexGrow={1} flexShrink={1}>
+          <Text color={TONE.note.color} wrap="wrap">
+            ⊟ {undoable.by === 'claude' ? 'Claude archived' : 'Archived'}: {undoable.titles.join(', ')}
+          </Text>
+        </Box>
+        <Box key="undo-actions" marginLeft={1} columnGap={2}>
+          <Button key="undo-archive" plain label="↺ Undo" onPress={() => void undoArchive($)} />
+          <Button key="undo-dismiss" plain dimColor label="✕" onPress={() => dismissUndo($)} />
+        </Box>
+      </Box>
+    )
+
+    /** Search and filter: a box where the surface has one, and a chip per filter that has steps. */
+    const isNarrowed = search.trim() !== '' || filter !== 'all'
+    const matches = filterSteps(mine, filter, search, clock)
+    const counts = Object.fromEntries(FILTERS.map(one => [one.id, filterSteps(mine, one.id, '', clock).length]))
+    const finder =
+      openSteps.length + shelf.length < 2
+        ? []
+        : [
+            Input !== undefined && (
+              <Box key="search" marginTop={1}>
+                <Input key="step-search" placeholder="Search your steps…" value={search} onInput={words => setSearch($, words)} onSubmit={words => setSearch($, words)} />
+              </Box>
+            ),
+            <Box key="filters" flexDirection="row" flexWrap="wrap" columnGap={2} marginTop={Input !== undefined ? 0 : 1}>
+              {FILTERS.filter(one => one.id === 'all' || one.id === filter || (counts[one.id] ?? 0) > 0).map(one => (
+                <Button
+                  key={`filter:${one.id}`}
+                  plain
+                  dimColor={filter !== one.id}
+                  label={`${filter === one.id ? '●' : '○'} ${one.label}${one.id === 'all' ? '' : ` · ${counts[one.id] ?? 0}`}`}
+                  onPress={() => (one.id === 'all' ? clearSearch($) : setFilter($, one.id))}
+                />
+              ))}
+            </Box>,
+          ]
+    const found = [
+      label('found', `FOUND · ${matches.length}${search.trim() ? ` for « ${search.trim()} »` : ''}`, 'fresh'),
+      ...(matches.length === 0
+        ? [
+            <Box key="found-none">
+              <Text dimColor wrap="wrap">
+                No step matches.
+              </Text>
+            </Box>,
+          ]
+        : filter === 'archived'
+          ? matches.map(archivedRow)
+          : matches.map(step => stepItem(step, own, 'found', undefined, 'Claude will pick it up', true))),
+      <Box key="found-clear" marginTop={1}>
+        <Button key="filter-clear" plain dimColor label="✕ Clear search and filter" onPress={() => clearSearch($)} />
+      </Box>,
+    ]
+
     const yourCard =
-      openSteps.length > 0 || confirmed.length > 0 || shelf.length > 0
+      openSteps.length > 0 || confirmed.length > 0 || shelf.length > 0 || undoShown
         ? card(
             'yours',
             moveTone,
@@ -1410,9 +1545,12 @@ export const register: Register = (on, options) => {
                   </Text>
                 </Box>
               ),
-              callsNow.length > 0 && label('decide', `NEEDS YOUR CALL · ${callsNow.length}`, 'call'),
-              ...callsNow.map(step => stepCard(step, 'call', undefined)),
-              ...nowGroups.flatMap(group => [
+              undoBar,
+              ...finder,
+              ...(isNarrowed ? found : []),
+              !isNarrowed && callsNow.length > 0 && label('decide', `NEEDS YOUR CALL · ${callsNow.length}`, 'call'),
+              ...(isNarrowed ? [] : callsNow.map(step => stepCard(step, 'call', undefined))),
+              ...(isNarrowed ? [] : nowGroups).flatMap(group => [
                 label(`group:${group.id}`, `${group.label} · ${group.steps.length}`, group.tone),
                 ...group.steps.map(step => {
                   hotkeys += 1
@@ -1420,17 +1558,17 @@ export const register: Register = (on, options) => {
                   return stepCard(step, group.tone, hotkeys <= 9 ? String(hotkeys) : undefined)
                 }),
               ]),
-              nowCount === 0 && (
+              !isNarrowed && nowCount === 0 && (
                 <Box key="calm" marginTop={1}>
                   <Text color={TONE.done.color} wrap="wrap">
                     {TONE.done.icon} Nothing needed from you this week.
                   </Text>
                 </Box>
               ),
-              laterSteps.length > 0 && fold('later', `${TONE.later.icon} Later · ${laterSteps.length}`),
-              ...(open.includes('later') ? laterSteps.map(step => stepItem(step, own, 'later', undefined, 'Claude will pick it up', true)) : []),
-              confirmed.length > 0 && fold('confirmed', `${TONE.done.icon} Confirmed recently · ${confirmed.length}`),
-              ...(open.includes('confirmed')
+              !isNarrowed && laterSteps.length > 0 && fold('later', `${TONE.later.icon} Later · ${laterSteps.length}`),
+              ...(!isNarrowed && open.includes('later') ? laterSteps.map(step => stepItem(step, own, 'later', undefined, 'Claude will pick it up', true)) : []),
+              !isNarrowed && confirmed.length > 0 && fold('confirmed', `${TONE.done.icon} Confirmed recently · ${confirmed.length}`),
+              ...(!isNarrowed && open.includes('confirmed')
                 ? confirmed.map(step => (
                     <Box key={`confirmed:${step.id}`} flexDirection="column">
                       <Box key={`done-line:${step.id}`}>
@@ -1452,21 +1590,8 @@ export const register: Register = (on, options) => {
                     </Box>
                   ))
                 : []),
-              shelf.length > 0 && fold('archived', `⊟ Archived · ${shelf.length}`),
-              ...(open.includes('archived')
-                ? shelf.map(step => (
-                    <Box key={`archived:${step.id}`} flexDirection="row">
-                      <Box key={`archived-title:${step.id}`} flexGrow={1} flexShrink={1}>
-                        <Text dimColor wrap="wrap">
-                          {step.title} · archived {clockText(step.archivedAt ?? clock)}
-                        </Text>
-                      </Box>
-                      <Box key={`restore-at:${step.id}`} marginLeft={1}>
-                        <Button key={`restore:${step.id}`} plain label="↺ Restore" onPress={() => restoreStep($, own, step.id)} />
-                      </Box>
-                    </Box>
-                  ))
-                : []),
+              !isNarrowed && shelf.length > 0 && fold('archived', `⊟ Archived · ${shelf.length}`),
+              ...(!isNarrowed && open.includes('archived') ? shelf.map(archivedRow) : []),
             ],
           )
         : null

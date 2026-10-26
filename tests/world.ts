@@ -43,6 +43,7 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
   const stored: Record<string, unknown> = {}
   const prompts: { text: string; context: readonly string[] }[] = []
   const phone: string[] = []
+  const toasts: string[] = []
   const logs: string[] = []
   const agents: Agent[] = []
   on('store.get', ($, e) => ({ value: stored[e.key] }))
@@ -59,6 +60,11 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
   })
   on('ui.log', ($, e) => {
     logs.push(e.text)
+
+    return { value: undefined }
+  })
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
 
     return { value: undefined }
   })
@@ -87,5 +93,5 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
     return (Array.isArray(value) ? value : (value?.steps ?? [])) as YourStep[]
   }
 
-  return { stored, prompts, phone, logs, agents, steps: () => stepsAt(KEY), stepsAt }
+  return { stored, prompts, phone, toasts, logs, agents, steps: () => stepsAt(KEY), stepsAt }
 }
