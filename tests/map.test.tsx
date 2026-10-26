@@ -112,7 +112,7 @@ test('a decision shows as Needs your call, with the default it would keep, never
     expect(await ui.find({ type: 'Text', text: /Switch Stripe to live mode\?/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '⏱ due tomorrow' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'No answer keeps: Stay in test' })).toBeDefined()
-    expect(await ui.find({ key: 'card:yours' })).toMatchObject({ props: { borderColor: 'warning' } })
+    expect(await ui.find({ key: 'card:yours' })).toMatchObject({ props: { borderColor: 'error' } })
     await ui.unmount()
   }
 

@@ -115,11 +115,11 @@ test('each goal opens to what was done for it', async ($, on) => {
     await unfold(pane, 'goals')
     expect(await pane.find({ type: 'Button', text: '▸ 3 things done' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: 'Used build (×2)' })).toBeUndefined()
-    await pane.press({ key: 'acts:now:Testers get the new build' })
+    await pane.press({ key: 'acts:all:Testers get the new build' })
     expect(await pane.find({ type: 'Button', text: '▾ 3 things done' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: 'Used build (×2)' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: 'Used deploy' })).toBeDefined()
-    await pane.press({ key: 'acts:now:Testers get the new build' })
+    await pane.press({ key: 'acts:all:Testers get the new build' })
     await pane.unmount()
   }
 })

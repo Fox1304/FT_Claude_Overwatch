@@ -136,5 +136,6 @@ export const isBlocked = (goal: Goal, steps: readonly YourStep[]) => {
   if (goal.status !== 'waiting') return false
   const named = stepsFor(goal, steps)
 
-  return named.length === 0 || named.some(step => step.status === 'todo')
+  // A step the person archived no longer holds the goal back.
+  return named.length === 0 || named.some(step => step.status === 'todo' && step.archivedAt === undefined)
 }

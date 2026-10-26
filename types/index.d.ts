@@ -61,6 +61,10 @@ export type YourStep = {
   tickedFrom?: string
   tickedAt?: number
   doneAt?: number
+  /** When the person archived it as no longer relevant: hidden from the active list, restorable. */
+  archivedAt?: number
+  /** Whether Claude last heard it as archived; a step whose archive state differs is waiting to be told. */
+  heardArchived?: boolean
   createdAt: number
 }
 

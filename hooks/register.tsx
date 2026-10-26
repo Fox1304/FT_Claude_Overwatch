@@ -80,6 +80,10 @@ import {
   toggle,
   unheard,
   waitedText,
+  activeSteps,
+  archiveIn,
+  archivedSteps,
+  restoreIn,
 } from './your-steps'
 
 const PANE = 'overview'
@@ -178,7 +182,7 @@ const loadOtherProjects = async ($: EngineInterface) => {
   const found: OtherProject[] = []
   for (const key of keys) {
     const { label, steps } = readStored(await $.store.get(key))
-    const open = steps.filter(step => step.status !== 'done')
+    const open = activeSteps(steps).filter(step => step.status !== 'done')
     if (open.length > 0) found.push({ key, label: label ?? labelFor(key.slice(STORE_PREFIX.length), null), steps: open })
   }
   if (!same(await read($, otherProjects), found)) await update($, otherProjects, () => found)
@@ -326,6 +330,28 @@ const tickStep = async ($: EngineInterface, key: string, id: string) => {
   if (step?.status === 'checked') await recordChanges($, key, [{ at: now, text: `You ticked: ${step.title}`, tone: 'you' }])
 }
 
+/** Archives a step the person no longer needs: it leaves the active list, and Claude hears of it like a tick. */
+const archiveStep = async ($: EngineInterface, key: string, id: string) => {
+  ensureSweep($)
+  const session = await $.session.id()
+  const from = await projectKey($)
+  const now = await $.clock.now()
+  const list = await changeStepsAt($, key, steps => archiveIn(steps, id, session, from, now))
+  const step = list.find(one => one.id === id)
+  if (step?.archivedAt === now) await recordChanges($, key, [{ at: now, text: `You archived: ${step.title}`, tone: 'you' }])
+}
+
+/** Brings an archived step back to the active list. */
+const restoreStep = async ($: EngineInterface, key: string, id: string) => {
+  ensureSweep($)
+  const session = await $.session.id()
+  const from = await projectKey($)
+  const now = await $.clock.now()
+  const list = await changeStepsAt($, key, steps => restoreIn(steps, id, session, from, now))
+  const step = list.find(one => one.id === id)
+  if (step !== undefined && step.archivedAt === undefined) await recordChanges($, key, [{ at: now, text: `You restored: ${step.title}`, tone: 'you' }])
+}
+
 /** Running subagents, for the pane. */
 const refreshHelpers = async ($: EngineInterface) => {
   const running: Helper[] = (await $.agent.list())
@@ -409,7 +435,9 @@ const deliverNotes = async ($: EngineInterface, items: readonly string[]) => {
   }
   await update($, notes, list => setNoteStatus(list ?? [], keys, 'sending'))
   try {
-    await $.prompt.submit({ text: noteMessage(waiting) })
+    // A prompt that did not enter answers with `drop` (the reason) rather than throwing.
+    const sent = await $.prompt.submit({ text: noteMessage(waiting) })
+    if (sent.drop !== undefined) throw new Error(sent.drop)
     await update($, notes, list => setNoteStatus(list ?? [], keys, 'sent'))
   } catch (error) {
     await update($, notes, list => setNoteStatus(list ?? [], keys, 'error', String(error instanceof Error ? error.message : error).slice(0, 160)))
@@ -776,6 +804,8 @@ export const register: Register = (on, options) => {
       }
       if (part.startsWith('The person ticked')) return [`☑ You ticked: ${names} · Claude is checking`]
       if (part.startsWith('The person unticked')) return [`☐ You took back: ${names} · Claude knows`]
+      if (part.startsWith('The person archived')) return [`⊟ You archived: ${names} · Claude knows`]
+      if (part.startsWith('The person restored')) return [`↺ You restored: ${names} · Claude knows`]
       if (part.startsWith('The person left')) return [noteLine(part)]
 
       return []
@@ -858,9 +888,10 @@ export const register: Register = (on, options) => {
     } as const
     type Tone = keyof typeof TONE
 
-    const openSteps = mine.filter(step => step.status !== 'done')
+    const shelf = archivedSteps(mine)
+    const openSteps = activeSteps(mine).filter(step => step.status !== 'done')
     const groups = groupSteps(openSteps, clock)
-    const confirmed = mine
+    const confirmed = activeSteps(mine)
       .filter(step => step.status === 'done')
       .sort((a, b) => (b.doneAt ?? 0) - (a.doneAt ?? 0))
       .slice(0, 3)
@@ -1129,9 +1160,16 @@ export const register: Register = (on, options) => {
         </Text>
       )
 
+      const archiveButton =
+        step.status === 'done' ? undefined : (
+          <Box key={`archive-at:${where}:${step.id}`} marginLeft={1}>
+            <Button key={`archive:${where}:${step.id}`} plain dimColor label="⊟" onPress={() => archiveStep($, at, step.id)} />
+          </Box>
+        )
+
       return (
         <Box key={`row:${where}:${step.id}`} flexDirection="column" marginTop={isBrief ? 0 : 1}>
-          {itemLine(where, ref, lead, title)}
+          {itemLine(where, ref, lead, title, archiveButton)}
           {kind === 'pick' && (
             <Box key={`choices:${step.id}`} flexDirection="row" flexWrap="wrap" columnGap={2} paddingLeft={2}>
               {(step.choices ?? []).map((choice, index) => (
@@ -1352,7 +1390,7 @@ export const register: Register = (on, options) => {
     let hotkeys = 0
     const moveTone: Tone = overdue > 0 ? 'overdue' : callsNow.length > 0 ? 'call' : nowCount > 0 ? 'soon' : 'done'
     const yourCard =
-      openSteps.length > 0 || confirmed.length > 0
+      openSteps.length > 0 || confirmed.length > 0 || shelf.length > 0
         ? card(
             'yours',
             moveTone,
@@ -1361,12 +1399,14 @@ export const register: Register = (on, options) => {
               ? `${nowCount} now${laterSteps.length > 0 ? ` · ${laterSteps.length} later` : ''}`
               : laterSteps.length > 0
                 ? `${laterSteps.length} later`
-                : 'all ticked',
+                : openSteps.length > 0
+                  ? 'all ticked'
+                  : 'nothing open',
             [
               openSteps.length > 0 && (
                 <Box key="how" marginTop={1}>
                   <Text dimColor wrap="wrap">
-                    ☐ tick when done · ◆ pick one · ⌨ type your answer{Input !== undefined ? ', then Enter' : ' in the conversation'} · ✎ tell Claude what to change
+                    ☐ tick when done · ◆ pick one · ⌨ type your answer{Input !== undefined ? ', then Enter' : ' in the conversation'} · ✎ tell Claude what to change · ⊟ archive if no longer relevant
                   </Text>
                 </Box>
               ),
@@ -1409,6 +1449,21 @@ export const register: Register = (on, options) => {
                           </Text>
                         </Box>
                       )}
+                    </Box>
+                  ))
+                : []),
+              shelf.length > 0 && fold('archived', `⊟ Archived · ${shelf.length}`),
+              ...(open.includes('archived')
+                ? shelf.map(step => (
+                    <Box key={`archived:${step.id}`} flexDirection="row">
+                      <Box key={`archived-title:${step.id}`} flexGrow={1} flexShrink={1}>
+                        <Text dimColor wrap="wrap">
+                          {step.title} · archived {clockText(step.archivedAt ?? clock)}
+                        </Text>
+                      </Box>
+                      <Box key={`restore-at:${step.id}`} marginLeft={1}>
+                        <Button key={`restore:${step.id}`} plain label="↺ Restore" onPress={() => restoreStep($, own, step.id)} />
+                      </Box>
                     </Box>
                   ))
                 : []),

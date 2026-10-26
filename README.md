@@ -13,6 +13,7 @@ The mod's plugin name is `overview`.
   - ⌨ **type** an answer in its box and press Enter.
 
   Claude hears about it: at its next step while it works, or in a turn of its own about 30 seconds after you stop, while it is idle.
+- **⊟ Archive a step**: a step that is no longer relevant can be archived with its ⊟ button. It leaves Your move and its count, and Claude is told; nothing is deleted. « Archived » (folded) lists archived steps, each with ↺ Restore to bring it back as it was.
 - **✎ Notes on any item**: every goal, step, map part and milestone has an ✎ button. It opens a box where you tell Claude what to change ("no longer relevant", "split it in two", "wrong date"); Claude reworks the item with your note.
 - **Project map** (folded): milestones and one card per part of the project, kept by Claude across sessions.
 - **Elsewhere**: helpers working in the background, your other open sessions, and open steps of your other projects.
@@ -62,8 +63,9 @@ To load it in every session without installing it, add the clone's absolute path
 - The pane opens by itself at the start of a session. `/overview` opens it again after you close it.
 - `/overview steps` shows or hides Claude's technical steps in the conversation (also the « Show technical steps » link at the bottom of the pane). Your choice is remembered.
 - Press a step's ☐ (or its number key while the pane has focus) to tick it; press it again to take the tick back before Claude has heard it.
+- Press ⊟ on a step to archive it; open « Archived » at the bottom of Your move and press ↺ Restore to bring one back.
 - Press ✎ on any item, type your note, press Enter. ✕ closes the box. A note that could not be sent shows ↻ Retry and ✕ Discard.
-- Folded parts (« Later », « All goals », « Project map », « Confirmed recently ») open with a click.
+- Folded parts (« Later », « Archived », « All goals », « Project map », « Confirmed recently ») open with a click.
 
 ### Options
 

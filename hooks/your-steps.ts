@@ -132,6 +132,7 @@ Do every step you can yourself. When one truly needs the person (a sign-in or 2F
 - When you are told the person ticked a step, or they say in a message that one is done, check it yourself when you can (the build now shows in TestFlight, the setting is on), then "confirm" it with "checked" saying how in a few plain words. If it is not done, "reopen" it with a short note saying what is missing. If you cannot check it, confirm it with "checked": "Your word".
 - Give each step "more" (what it is, why now, how, and how you will confirm it) and "sources" (the document sections or pages with the details), so the person can open it in the pane. Keep them current with "update" when things change.
 - The pane's « Your move » shows decisions, what is overdue or due within a week, and steps added in the last day; everything else folds under « Later ». Give "due" to any step that should happen soon, so it stays in front.
+- The person can archive a step they no longer need (« The person archived… » reaches you) and restore it later. Stop waiting on an archived step and do not add it again; the list you read shows the archive apart.
 - "remove" a step that is no longer needed. Call the tool with nothing to read the list.`
 
 /** A source as Claude gives it, before it becomes a link. */
@@ -342,11 +343,39 @@ export const applyOps = (
     return [step]
   })
   const added: YourStep[] = ops.add
-    .filter(one => !kept.some(step => step.status !== 'done' && step.title.toLowerCase() === one.title.toLowerCase()))
+    .filter(one => !kept.some(step => step.status !== 'done' && !isArchived(step) && step.title.toLowerCase() === one.title.toLowerCase()))
     .map(({ sources: _sources, ...one }) => ({ ...one, id: newId(), status: 'todo' as const, heard: 'todo' as const, createdAt: now }))
 
   return { list: [...kept, ...added], unknown, added }
 }
+
+/** Whether the person archived the step: out of the active list until restored. */
+export const isArchived = (step: YourStep) => step.archivedAt !== undefined
+
+/** The steps that count: everything the person has not archived. */
+export const activeSteps = (list: readonly YourStep[]) => list.filter(step => !isArchived(step))
+
+/** The person's archive, most recently archived first. */
+export const archivedSteps = (list: readonly YourStep[]) =>
+  list.filter(isArchived).sort((a, b) => (b.archivedAt ?? 0) - (a.archivedAt ?? 0))
+
+/** Archives an open step the person no longer needs; nothing is deleted, so it can be restored. */
+export const archiveIn = (list: YourStep[], id: string, session: string, from: string, now: number) =>
+  list.map(step =>
+    step.id !== id || step.status === 'done' || isArchived(step) ? step : { ...step, archivedAt: now, tickedIn: session, tickedFrom: from, tickedAt: now },
+  )
+
+/** Brings an archived step back to the active list, as it was. */
+export const restoreIn = (list: YourStep[], id: string, session: string, from: string, now: number) =>
+  list.map(step => {
+    if (step.id !== id || !isArchived(step)) return step
+    const { archivedAt: _archivedAt, ...rest } = step
+
+    return { ...rest, tickedIn: session, tickedFrom: from, tickedAt: now }
+  })
+
+/** Whether Claude has heard the step's archive state. */
+const archiveHeard = (step: YourStep) => isArchived(step) === (step.heardArchived ?? false)
 
 /** Drops confirmed steps once they are a week old, and keeps the list bounded. */
 export const prune = (list: YourStep[], now: number) =>
@@ -393,12 +422,13 @@ export const reply = (list: YourStep[], id: string, words: string, session: stri
 /** How the person answers a step: tick it, pick an option, or type. */
 export const answerKind = (step: YourStep) => (step.choices !== undefined ? 'pick' : step.asks !== undefined ? 'type' : 'tick')
 
-/** Steps whose status (or picked option) Claude has not heard yet. */
+/** Steps whose status, picked option or archive state Claude has not heard yet. */
 export const unheard = (list: readonly YourStep[]) =>
   list.filter(
     step =>
       step.status !== 'done' &&
-      (step.status !== step.heard || (step.status === 'checked' && (step.answer ?? '') !== (step.heardAnswer ?? ''))),
+      (!archiveHeard(step) ||
+        (!isArchived(step) && (step.status !== step.heard || (step.status === 'checked' && (step.answer ?? '') !== (step.heardAnswer ?? ''))))),
   )
 
 /** The unheard ticks a session of project `key` picks up: its own pane's, and any other project's pane's. */
@@ -410,13 +440,18 @@ export const markHeard = (list: YourStep[], told: readonly YourStep[]) =>
   list.map(step => {
     const said = told.find(one => one.id === step.id)
 
-    if (said === undefined || said.status !== step.status || said.answer !== step.answer) return step
+    if (said === undefined || said.status !== step.status || said.answer !== step.answer || isArchived(said) !== isArchived(step)) return step
+    const archived = isArchived(step) ? { heardArchived: true } : {}
+    const { heardArchived: _heardArchived, ...rest } = step
 
-    return step.answer === undefined ? { ...step, heard: step.status } : { ...step, heard: step.status, heardAnswer: step.answer }
+    return step.answer === undefined ? { ...rest, ...archived, heard: step.status } : { ...rest, ...archived, heard: step.status, heardAnswer: step.answer }
   })
 
 /** What Claude reads when the person has ticked or unticked steps. */
-export const noteFor = (steps: readonly YourStep[], goals: readonly Goal[] = []) => {
+export const noteFor = (all: readonly YourStep[], goals: readonly Goal[] = []) => {
+  const archivedNow = all.filter(step => isArchived(step) && !archiveHeard(step))
+  const restored = all.filter(step => !isArchived(step) && !archiveHeard(step))
+  const steps = activeSteps(all).filter(archiveHeard)
   const ticked = steps.filter(step => step.status === 'checked' && step.answer === undefined)
   const answered = steps.filter(step => step.status === 'checked' && step.answer !== undefined && step.asks !== undefined)
   const decided = steps.filter(step => step.status === 'checked' && step.answer !== undefined && step.asks === undefined)
@@ -438,6 +473,10 @@ export const noteFor = (steps: readonly YourStep[], goals: readonly Goal[] = [])
       `The person decided in the Overview pane:\n${decided.map(pick).join('\n')}\nAct on ${decided.length === 1 ? 'it' : 'them'}, then confirm the step with ${YOUR_STEPS_TOOL}, "checked" saying what you did.`,
     ticked.length > 0 &&
       `The person ticked ${ticked.length === 1 ? 'this step' : 'these steps'} as done in the Overview pane:\n${ticked.map(line).join('\n')}\nCheck each one yourself when you can, then confirm it with ${YOUR_STEPS_TOOL} (saying how you checked), or reopen it with a short note saying what is missing. Then carry on with any goal that was waiting on it.`,
+    archivedNow.length > 0 &&
+      `The person archived ${archivedNow.length === 1 ? 'this step' : 'these steps'} in the Overview pane as no longer relevant:\n${archivedNow.map(line).join('\n')}\nStop waiting on ${archivedNow.length === 1 ? 'it' : 'them'} and do not add ${archivedNow.length === 1 ? 'it' : 'them'} again; the person can restore an archived step from the pane.`,
+    restored.length > 0 &&
+      `The person restored ${restored.length === 1 ? 'this step' : 'these steps'} from the archive; open again:\n${restored.map(line).join('\n')}`,
     unticked.length > 0 &&
       `The person unticked ${unticked.length === 1 ? 'this step' : 'these steps'} (or took back their pick or answer); not done after all:\n${unticked.map(line).join('\n')}`,
   ].filter(Boolean)
@@ -447,8 +486,10 @@ export const noteFor = (steps: readonly YourStep[], goals: readonly Goal[] = [])
 
 /** The list as the tool answers it to Claude. */
 export const describeList = (list: readonly YourStep[]) => {
-  const open = list.filter(step => step.status !== 'done')
-  if (open.length === 0) return 'No open steps for the person.'
+  const open = activeSteps(list).filter(step => step.status !== 'done')
+  const shelved = archivedSteps(list)
+  const archive = shelved.length > 0 ? `\nArchived by the person as no longer relevant (do not add them again):\n${shelved.map(step => `- ${step.id} · ${step.title}`).join('\n')}` : ''
+  if (open.length === 0) return `No open steps for the person.${archive}`
   const word = (step: YourStep) =>
     step.status === 'checked'
       ? step.answer !== undefined
@@ -465,7 +506,7 @@ export const describeList = (list: readonly YourStep[]) => {
             : 'to do'
   const due = (step: YourStep) => (step.due ? ` · due ${step.due}` : '')
 
-  return ['Open steps for the person:', ...open.map(step => `- ${step.id} · ${word(step)}${due(step)} · ${step.title}`)].join('\n')
+  return ['Open steps for the person:', ...open.map(step => `- ${step.id} · ${word(step)}${due(step)} · ${step.title}`)].join('\n') + archive
 }
 
 /** The quiet transcript line for one call of the tool. */
@@ -578,7 +619,7 @@ export const dueReminders = (list: readonly YourStep[], now: number) => {
   if (hour < 9 || hour >= 21) return []
 
   return list.filter(step => {
-    if (step.status !== 'todo') return false
+    if (step.status !== 'todo' || isArchived(step)) return false
     if (step.remindedAt !== undefined && now - step.remindedAt < DAY_MS) return false
     const isOld = now - step.createdAt >= DAY_MS
     const isNear = step.due !== undefined && daysBetween(dayOf(now), step.due) <= 1

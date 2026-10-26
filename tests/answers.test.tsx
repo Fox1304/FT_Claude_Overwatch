@@ -57,7 +57,7 @@ test('on the phone, where there is no box, the step says to answer in the conver
   await $.tool.call({ tool: STEPS, add: [{ title: 'Send the video links', asks: 'The three YouTube links' }] })
   const ui = await $.ui.mount({ ...PANE, surface: 'mobile' })
   expect(await ui.find({ type: 'Text', text: 'Answer in the conversation: The three YouTube links' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /✎ type your answer in the conversation/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /⌨ type your answer in the conversation/ })).toBeDefined()
   await ui.unmount()
 })
 

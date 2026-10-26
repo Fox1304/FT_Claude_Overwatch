@@ -69,7 +69,7 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
   }))
   on('agent.list', () => ({ value: agents }))
   on('prompt.submit', ($, e) => {
-    if (options.failPrompts?.now) throw new Error('the session is offline')
+    if (options.failPrompts?.now) return { drop: 'the session is offline' }
     prompts.push({ text: e.text, context: e.context ?? [] })
 
     return { text: e.text }
