@@ -589,6 +589,7 @@ const takeInbox = async ($: EngineInterface) => {
 
 /** Takes the person's note on an item: empty, it asks for words; else it goes to Claude, here or in the session that owns the item. */
 const sendNote = async ($: EngineInterface, box: string, ref: ItemRef, words: string) => {
+  ensureSweep($)
   const text = noteText(words)
   if (text === undefined) {
     await update($, editProblem, () => box)
@@ -732,6 +733,7 @@ export const register: Register = (on, options) => {
   on('tool.check', { tool: 'mcp__overview__project_map' }, () => ({ decision: 'allow' }))
 
   on('tool.call', { tool: 'mcp__overview__project_map' }, async ($, e) => {
+    ensureSweep($)
     const input = parseMap(e as unknown as Record<string, unknown>)
     if (input.milestones === undefined && input.parts === undefined) return { result: describeMap(await loadMap($)) }
     const root = rootOf(await projectKey($))
@@ -767,6 +769,7 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', { tool: 'mcp__overview__goals' }, async ($, e) => {
+    ensureSweep($)
     if (e.agentId !== undefined) {
       return { result: 'Only the main conversation keeps the overview; carry on with your task.' }
     }
@@ -811,6 +814,7 @@ export const register: Register = (on, options) => {
   })
 
   on('tool.call', { tool: 'mcp__overview__your_steps' }, async ($, e) => {
+    ensureSweep($)
     const ops = parseOps(e as unknown as Record<string, unknown>)
     if (isEmpty(ops)) return { result: describeList(await loadYourSteps($)) }
     const base = await repoBase($)
