@@ -90,7 +90,7 @@ test("other projects' steps show and can be ticked from here", async ($, on) => 
   const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await pane.press({ key: 'other:n1' })
   expect(w.stepsAt(OTHER_KEY)[0]).toMatchObject({ status: 'checked', tickedFrom: 'yourSteps:/work/myapp' })
-  expect(await pane.find({ type: 'Text', text: 'Ticked · Claude in otherapp will pick it up' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'Ticked · Claude in otherapp will pick it up in its next session' })).toBeDefined()
 
   await clock.advance(60_000)
   expect(w.prompts).toHaveLength(0)

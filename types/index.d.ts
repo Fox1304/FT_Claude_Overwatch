@@ -55,6 +55,8 @@ export type YourStep = {
   status: YourStepStatus
   /** The status Claude last heard; a step whose status differs is waiting to be told. */
   heard: YourStepStatus
+  /** The session whose Claude asked for it, or last touched it with the tool or waited on it: that session hears its ticks while it is open. */
+  askedIn?: string
   /** The session whose pane ticked it last. */
   tickedIn?: string
   /** The project (store key) whose pane ticked it last; another project's tick is picked up by any session here. */
@@ -101,7 +103,13 @@ export type Part = {
 }
 
 /** The project's map, kept by Claude, shared by every session of the project. */
-export type ProjectMap = { milestones: Milestone[]; parts: Part[]; updatedAt: number }
+export type ProjectMap = {
+  milestones: Milestone[]
+  parts: Part[]
+  updatedAt: number
+  /** The session that sent the map last: notes on its items go there while it is open. */
+  updatedIn?: string
+}
 
 /** One line of the "changed recently" feed. */
 export type Change = { at: number; text: string; tone: 'done' | 'stuck' | 'progress' | 'you' | 'info' }
@@ -123,7 +131,12 @@ export type ItemNote = {
   status: 'sending' | 'queued' | 'sent' | 'error'
   error?: string
   at: number
+  /** Where a note went when another session owns the item: « Claude in "…" », or the project's next session. */
+  sentTo?: string
 }
+
+/** A note waiting in the store for the session that owns its item, or for the next session of its project. */
+export type InboxNote = { note: ItemNote; key: string; target: string }
 
 /** A link under a step, always an https address. */
 export type StepLink = { label: string; url: string }
@@ -144,6 +157,10 @@ export type SessionCard = {
   total: number
   state: 'working' | 'waiting' | 'paused' | 'done' | 'idle'
   updatedAt: number
+  /** The store key of the session's project, so a tick can go to one of its sessions. */
+  key?: string
+  /** When the person last typed in the session (else when it started): the project's last-used session hears what a closed one would have. */
+  activeAt?: number
 }
 
 /** One line of what was done for a goal; repeats of the same line are counted. */
@@ -160,6 +177,8 @@ declare module 'claude-code' {
       shownCalls: string[]
       /** This project's steps for the person, as last read from the store. */
       yourSteps: YourStep[]
+      /** When the person last typed in this session, or when it started. */
+      activeAt: number
       /** The store key of this project's steps, found once per session. */
       project: string
       /** This project's short name ("myapp"), shown in other projects' panes. */

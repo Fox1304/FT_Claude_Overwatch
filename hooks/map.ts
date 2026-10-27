@@ -100,12 +100,13 @@ export const parseMap = (raw: Record<string, unknown>): MapInput => {
 
 export const readMap = (stored: unknown): ProjectMap => {
   if (typeof stored !== 'object' || stored === null) return EMPTY_MAP
-  const { milestones, parts, updatedAt } = stored as Partial<ProjectMap>
+  const { milestones, parts, updatedAt, updatedIn } = stored as Partial<ProjectMap>
 
   return {
     milestones: Array.isArray(milestones) ? milestones : [],
     parts: Array.isArray(parts) ? parts : [],
     updatedAt: typeof updatedAt === 'number' ? updatedAt : 0,
+    ...(typeof updatedIn === 'string' ? { updatedIn } : {}),
   }
 }
 
@@ -150,10 +151,11 @@ export const addChanges = (feed: readonly Change[], added: readonly Change[]) =>
   [...[...added].reverse(), ...feed].slice(0, CHANGES_KEPT)
 
 /** Applies a map input: each list sent replaces the stored one. */
-export const applyMap = (map: ProjectMap, input: MapInput, now: number): ProjectMap => ({
+export const applyMap = (map: ProjectMap, input: MapInput, now: number, session?: string): ProjectMap => ({
   milestones: input.milestones ?? map.milestones,
   parts: input.parts ?? map.parts,
   updatedAt: now,
+  ...(session !== undefined ? { updatedIn: session } : map.updatedIn !== undefined ? { updatedIn: map.updatedIn } : {}),
 })
 
 /** The map as the tool answers it to Claude. */

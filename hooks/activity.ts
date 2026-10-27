@@ -109,6 +109,8 @@ export const cardFor = (
   working: boolean,
   steps: readonly YourStep[],
   now: number,
+  key?: string,
+  activeAt?: number,
 ): SessionCard => {
   const { summary, goals } = board
   const done = goals.filter(goal => goal.status === 'done').length
@@ -124,7 +126,18 @@ export const cardFor = (
             ? 'paused'
             : 'idle'
 
-  return { id, project, summary, ...(active ? { active } : {}), done, total: goals.length, state, updatedAt: now }
+  return {
+    id,
+    project,
+    summary,
+    ...(active ? { active } : {}),
+    done,
+    total: goals.length,
+    state,
+    updatedAt: now,
+    ...(key !== undefined ? { key } : {}),
+    ...(activeAt !== undefined ? { activeAt } : {}),
+  }
 }
 
 /** The card's words in another session's pane. */

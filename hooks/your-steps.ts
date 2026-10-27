@@ -1,4 +1,6 @@
 import type { Goal, StepFilter, StepLink, YourStep, YourStepStatus } from '../types'
+import { hearerOf } from './routing'
+import type { LiveSession } from './routing'
 
 export const YOUR_STEPS_TOOL = 'mcp__overview__your_steps'
 export const STORE_PREFIX = 'yourSteps:'
@@ -331,6 +333,7 @@ export const applyOps = (
   ops: YourStepsOps,
   now: number,
   newId: () => string,
+  session?: string,
 ): { list: YourStep[]; unknown: string[]; added: YourStep[]; archived: YourStep[]; refused: { id: string; reason: string }[] } => {
   const known = new Set(list.map(step => step.id))
   const unknown = [...ops.update.map(one => one.id), ...ops.confirm.map(one => one.id), ...ops.reopen.map(one => one.id), ...ops.archive.map(one => one.id)].filter(
@@ -340,7 +343,10 @@ export const applyOps = (
   const reopened = new Map(ops.reopen.map(one => [one.id, one.note]))
 
   const changes = new Map(ops.update.map(one => [one.id, one]))
-  const changed = list.map(step => {
+  // The session that touches a step with the tool is the one waiting on it now: it hears its ticks.
+  const touched = new Set([...ops.update, ...ops.confirm, ...ops.reopen, ...ops.archive].map(one => one.id))
+  const owned = session === undefined ? list : list.map(step => (touched.has(step.id) ? { ...step, askedIn: session } : step))
+  const changed = owned.map(step => {
     const change = changes.get(step.id)
     if (change === undefined) return step
     const { id: _id, sources: _sources, due, ...fields } = change
@@ -391,7 +397,14 @@ export const applyOps = (
   })
   const added: YourStep[] = ops.add
     .filter(one => !shelved.some(step => step.status !== 'done' && !isArchived(step) && step.title.toLowerCase() === one.title.toLowerCase()))
-    .map(({ sources: _sources, ...one }) => ({ ...one, id: newId(), status: 'todo' as const, heard: 'todo' as const, createdAt: now }))
+    .map(({ sources: _sources, ...one }) => ({
+      ...one,
+      id: newId(),
+      status: 'todo' as const,
+      heard: 'todo' as const,
+      createdAt: now,
+      ...(session === undefined ? {} : { askedIn: session }),
+    }))
 
   return { list: [...shelved, ...added], unknown, added, archived, refused }
 }
@@ -484,9 +497,17 @@ export const unheard = (list: readonly YourStep[]) =>
         (!isArchived(step) && (step.status !== step.heard || (step.status === 'checked' && (step.answer ?? '') !== (step.heardAnswer ?? ''))))),
   )
 
-/** The unheard ticks a session of project `key` picks up: its own pane's, and any other project's pane's. */
-export const ticksFor = (list: readonly YourStep[], session: string, key: string) =>
-  unheard(list).filter(step => step.tickedIn === session || (step.tickedFrom !== undefined && step.tickedFrom !== key))
+/**
+ * The unheard ticks session `session` of project `key` picks up: those of the steps it asked for,
+ * and, once their session is closed, those made in its pane or, from another project's pane, by
+ * the project's last-used session (`live`: the open sessions, this one included).
+ */
+export const ticksFor = (list: readonly YourStep[], session: string, key: string, live: readonly LiveSession[]) =>
+  unheard(list).filter(step => hearerOf(step, key, live) === session)
+
+/** Makes `session` the one that hears these steps' ticks: it waits on them now. */
+export const adopt = (list: YourStep[], ids: ReadonlySet<string>, session: string) =>
+  list.map(step => (ids.has(step.id) && step.askedIn !== session ? { ...step, askedIn: session } : step))
 
 /** Records that Claude was told these steps' statuses; a step ticked again since stays unheard. */
 export const markHeard = (list: YourStep[], told: readonly YourStep[]) =>

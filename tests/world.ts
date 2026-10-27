@@ -38,8 +38,10 @@ export const allText = async (ui: Drawing) =>
 
 export type Agent = { id: string; description: string; type: string; status: AgentStatus }
 
-/** The engine beneath the mod: a store, a session in a worktree of myapp, the phone, helpers, and what reaches Claude. */
+/** The engine beneath the mod: a store, a session in a worktree of myapp (`me`), the phone, helpers, and what reaches Claude. */
 export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) => {
+  /** Which session the engine says it is; a test switches it to play another session on the same store. */
+  const me = { id: 'S1' }
   const stored: Record<string, unknown> = {}
   const prompts: { text: string; context: readonly string[] }[] = []
   const phone: string[] = []
@@ -68,7 +70,7 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
 
     return { value: undefined }
   })
-  on('session.id', () => ({ value: 'S1' }))
+  on('session.id', () => ({ value: me.id }))
   on('session.root', () => ({ value: '/work/myapp-worktree' }))
   on('session.repo', () => ({
     value: { root: '/work/myapp', remote: 'git@github.com:octocat/myapp.git', internal: false, name: null },
@@ -93,5 +95,5 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
     return (Array.isArray(value) ? value : (value?.steps ?? [])) as YourStep[]
   }
 
-  return { stored, prompts, phone, toasts, logs, agents, steps: () => stepsAt(KEY), stepsAt }
+  return { stored, prompts, phone, toasts, logs, agents, me, steps: () => stepsAt(KEY), stepsAt }
 }

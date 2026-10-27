@@ -1,7 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
 
-import type { Board, Change, Goal, Helper, ItemKind, ItemNote, LastArchive, Milestone, OtherProject, Part, SessionCard, StepFilter, YourStep } from '../types'
+import type { Board, Change, Goal, Helper, InboxNote, ItemKind, ItemNote, LastArchive, Milestone, OtherProject, Part, SessionCard, StepFilter, YourStep } from '../types'
+import { INBOX_PREFIX, hearerOf, heirOf, inboxKey, pickupLine, sessionName } from './routing'
+import type { LiveSession } from './routing'
 import { noteLine, noteMessage, noteText, putNote, setNoteStatus, settleNotes } from './notes'
 import {
   CHANGES_PREFIX,
@@ -82,6 +84,7 @@ import {
   waitedText,
   FILTERS,
   activeSteps,
+  adopt,
   archiveIn,
   archivedSteps,
   filterSteps,
@@ -120,6 +123,7 @@ const notes = atom({ plugin: 'overview', key: 'notes' } as const, [])
 const lastArchive = atom({ plugin: 'overview', key: 'lastArchive' } as const, null)
 const stepSearch = atom({ plugin: 'overview', key: 'stepSearch' } as const, '')
 const stepFilter = atom({ plugin: 'overview', key: 'stepFilter' } as const, 'all')
+const activeAt = atom({ plugin: 'overview', key: 'activeAt' } as const, 0)
 
 /** How long the pane offers to undo the last archive; /overview undo works until the next one. */
 const UNDO_MS = 2 * 60_000
@@ -245,6 +249,7 @@ const chooseStep = async ($: EngineInterface, key: string, id: string, choice: s
   const list = await changeStepsAt($, key, steps => choose(steps, id, choice, session, from, now))
   const step = list.find(one => one.id === id)
   if (step?.answer !== undefined) await recordChanges($, key, [{ at: now, text: `You chose: ${step.answer}`, tone: 'you' }])
+  await sayWhereItWent($, key, step)
 }
 
 /** Answers a step that asks for words, in this project or another one; an empty answer takes it back. */
@@ -256,6 +261,7 @@ const answerStep = async ($: EngineInterface, key: string, id: string, words: st
   const list = await changeStepsAt($, key, steps => reply(steps, id, words, session, from, now))
   const step = list.find(one => one.id === id)
   if (step?.answer !== undefined) await recordChanges($, key, [{ at: now, text: `You answered: ${step.title}`, tone: 'you' }])
+  await sayWhereItWent($, key, step)
 }
 
 /** Publishes what this session is doing, when it changed or as a heartbeat; never fails its caller. */
@@ -271,7 +277,16 @@ const writeCard = async ($: EngineInterface) => {
   const id = await $.session.id()
   const now = await $.clock.now()
   await projectKey($)
-  const card = cardFor(id, await read($, projectLabel), await read($, board), await read($, isWorking), await read($, yourSteps), now)
+  const card = cardFor(
+    id,
+    await read($, projectLabel),
+    await read($, board),
+    await read($, isWorking),
+    await read($, yourSteps),
+    now,
+    await projectKey($),
+    (await read($, activeAt)) || undefined,
+  )
   const { updatedAt: _at, ...words } = card
   const said = JSON.stringify(words)
   if (said === lastCard && now - lastCardAt < HEARTBEAT_MS) return
@@ -293,6 +308,33 @@ const loadOtherSessions = async ($: EngineInterface) => {
   }
   found.sort((a, b) => a.project.localeCompare(b.project) || a.id.localeCompare(b.id))
   if (!same(await read($, otherSessions), found)) await update($, otherSessions, () => found)
+
+  return found
+}
+
+/** The open sessions as routing reads them: the others' cards, read fresh from the store, and this one. */
+const liveSessions = async ($: EngineInterface): Promise<LiveSession[]> => [
+  ...(await loadOtherSessions($)),
+  { id: await $.session.id(), key: await projectKey($), activeAt: await read($, activeAt), project: await read($, projectLabel), summary: (await read($, board)).summary },
+]
+
+/** The short name of a project, this one or another one shown here. */
+const labelOf = async ($: EngineInterface, key: string) =>
+  key === (await projectKey($)) ? await read($, projectLabel) : ((await read($, otherProjects)).find(one => one.key === key)?.label ?? labelFor(rootOf(key), null))
+
+/**
+ * Tells the person where what they did on a step went, when it is not this session's Claude that
+ * asked for it: another open session, this one standing in for a closed one, or the project's next session.
+ */
+const sayWhereItWent = async ($: EngineInterface, key: string, step: YourStep | undefined) => {
+  if (step === undefined || unheard([step]).length === 0) return
+  const me = await $.session.id()
+  const live = await liveSessions($)
+  const hearer = hearerOf(step, key, live)
+  const isClosedOwner = step.askedIn !== undefined && step.askedIn !== hearer
+  if (hearer === me && !isClosedOwner) return
+  const line = pickupLine(hearer, me, live, await labelOf($, key), isClosedOwner)
+  $.ui.toast(`↗ ${line.charAt(0).toUpperCase()}${line.slice(1)}`, { timeoutMs: 6000 })
 }
 
 /** Reminds the person's phone of steps that have waited a day, or are due by tomorrow. */
@@ -336,6 +378,7 @@ const tickStep = async ($: EngineInterface, key: string, id: string) => {
   const list = await changeStepsAt($, key, steps => toggle(steps, id, session, from, now))
   const step = list.find(one => one.id === id)
   if (step?.status === 'checked') await recordChanges($, key, [{ at: now, text: `You ticked: ${step.title}`, tone: 'you' }])
+  await sayWhereItWent($, key, step)
 }
 
 /** Archives a step the person no longer needs: it leaves the active list, and Claude hears of it like a tick. */
@@ -400,6 +443,7 @@ const restoreStep = async ($: EngineInterface, key: string, id: string) => {
   const list = await changeStepsAt($, key, steps => restoreIn(steps, id, session, from, now))
   const step = list.find(one => one.id === id)
   if (step !== undefined && step.archivedAt === undefined) await recordChanges($, key, [{ at: now, text: `You restored: ${step.title}`, tone: 'you' }])
+  await sayWhereItWent($, key, step)
 }
 
 /** Running subagents, for the pane. */
@@ -434,12 +478,13 @@ const sweep = async ($: EngineInterface) => {
   await loadMap($)
   await remind($)
   await settle($, () => false)
+  await takeInbox($)
   if (!(await read($, isWorking))) {
     const queued = (await read($, notes)).filter(note => note.status === 'queued')
     if (queued.length > 0) await deliverNotes($, queued.map(note => note.item))
   }
   if (pickupMs <= 0 || unheard(list).length === 0 || (await read($, isWorking))) return
-  const waiting = ticksFor(list, await $.session.id(), await projectKey($))
+  const waiting = ticksFor(list, await $.session.id(), await projectKey($), await liveSessions($))
   const lastTick = Math.max(0, ...waiting.map(step => step.tickedAt ?? 0))
   if (waiting.length === 0 || (await $.clock.now()) - lastTick < pickupMs) return
   await changeYourSteps($, steps => markHeard(steps, waiting))
@@ -453,7 +498,7 @@ const changeYourSteps = async ($: EngineInterface, change: (list: YourStep[]) =>
 const takeTicks = async ($: EngineInterface) => {
   const list = await read($, yourSteps)
   if (unheard(list).length === 0) return []
-  const waiting = ticksFor(list, await $.session.id(), await projectKey($))
+  const waiting = ticksFor(list, await $.session.id(), await projectKey($), await liveSessions($))
   if (waiting.length > 0) await changeYourSteps($, steps => markHeard(steps, waiting))
 
   return waiting
@@ -494,7 +539,55 @@ const deliverNotes = async ($: EngineInterface, items: readonly string[]) => {
   }
 }
 
-/** Takes the person's note on an item: empty, it asks for words; else it goes to Claude. */
+/**
+ * Who hears a note on an item, as for a tick made here: the session that owns it (the one that
+ * asked for the step, or sent the map) while it is open; a goal is always this session's.
+ */
+const noteHearer = async ($: EngineInterface, ref: ItemRef) => {
+  const me = await $.session.id()
+  const own = await projectKey($)
+  const live = await liveSessions($)
+  if (ref.kind === 'goal') return { hearer: me, key: own, live }
+  if (ref.kind === 'step') {
+    const key = ref.stepKey ?? own
+    const list = key === own ? await read($, yourSteps) : ((await read($, otherProjects)).find(one => one.key === key)?.steps ?? [])
+    const askedIn = list.find(one => one.id === ref.stepId)?.askedIn
+
+    return { hearer: hearerOf({ askedIn, tickedIn: me, tickedFrom: own }, key, live), key, live }
+  }
+
+  return { hearer: hearerOf({ askedIn: (await read($, projectMap)).updatedIn, tickedIn: me, tickedFrom: own }, own, live), key: own, live }
+}
+
+/** Leaves a note in the store for the session that owns its item, or for its project's next session. */
+const postNote = async ($: EngineInterface, note: ItemNote, key: string, hearer: string | undefined, live: readonly LiveSession[]) => {
+  const waiting: InboxNote = { note, key, target: hearer ?? '' }
+  await $.store.set(inboxKey(hearer === undefined ? 'p' : 's', hearer ?? key, note.item), waiting)
+  const sentTo = hearer === undefined ? `Claude in ${await labelOf($, key)}, at its next session` : sessionName(live.find(one => one.id === hearer))
+  await update($, notes, list => putNote(list ?? [], { ...note, status: 'sent', sentTo }))
+  $.ui.toast(`✎ Note sent to ${sentTo}`, { timeoutMs: 6000 })
+}
+
+/** Takes the notes other panes left for this session, and for this project's closed or next sessions when this one is its heir. */
+const takeInbox = async ($: EngineInterface) => {
+  const keys = (await $.store.keys()).filter(key => key.startsWith(INBOX_PREFIX))
+  if (keys.length === 0) return
+  const me = await $.session.id()
+  const own = await projectKey($)
+  const live = await liveSessions($)
+  const isHeir = heirOf(live, own)?.id === me
+  for (const key of keys) {
+    const waiting = (await $.store.get(key)) as InboxNote | undefined
+    if (waiting?.note === undefined) continue
+    const isMine = waiting.target === me || (isHeir && waiting.key === own && !live.some(one => one.id === waiting.target))
+    if (!isMine) continue
+    await $.store.delete(key)
+    const { sentTo: _sentTo, ...note } = waiting.note
+    await update($, notes, list => putNote(list ?? [], { ...note, status: 'queued' }))
+  }
+}
+
+/** Takes the person's note on an item: empty, it asks for words; else it goes to Claude, here or in the session that owns the item. */
 const sendNote = async ($: EngineInterface, box: string, ref: ItemRef, words: string) => {
   const text = noteText(words)
   if (text === undefined) {
@@ -503,6 +596,14 @@ const sendNote = async ($: EngineInterface, box: string, ref: ItemRef, words: st
     return
   }
   const now = await $.clock.now()
+  const route = await noteHearer($, ref)
+  if (route.hearer !== (await $.session.id())) {
+    await closeEdit($)
+    await recordChanges($, ref.stepKey ?? (await projectKey($)), [{ at: now, text: `Your note on ${ref.title}`, tone: 'you' }])
+    await postNote($, { ...ref, text, status: 'queued', at: now }, route.key, route.hearer, route.live)
+
+    return
+  }
   await update($, notes, list => putNote(list ?? [], { ...ref, text, status: 'sending', at: now }))
   await closeEdit($)
   await recordChanges($, ref.stepKey ?? (await projectKey($)), [{ at: now, text: `Your note on ${ref.title}`, tone: 'you' }])
@@ -582,6 +683,8 @@ export const register: Register = (on, options) => {
     })
     const stored = await $.store.get(STEPS_KEY)
     await update($, showSteps, () => stored === true)
+    const started = await $.clock.now()
+    await update($, activeAt, at => (at ? at : started))
     await loadYourSteps($)
     await loadOtherProjects($)
     await loadMap($)
@@ -634,7 +737,7 @@ export const register: Register = (on, options) => {
     const root = rootOf(await projectKey($))
     const now = await $.clock.now()
     const before = readMap(await $.store.get(`${MAP_PREFIX}${root}`))
-    const after = applyMap(before, input, now)
+    const after = applyMap(before, input, now, await $.session.id())
     await $.store.set(`${MAP_PREFIX}${root}`, after)
     await update($, projectMap, () => after)
     await settle($, note => (note.kind === 'part' && input.parts !== undefined) || (note.kind === 'milestone' && input.milestones !== undefined))
@@ -690,6 +793,11 @@ export const register: Register = (on, options) => {
 
       return forgetGone(kept, merged)
     })
+    // A session waiting on a step hears its tick, whoever asked for it first.
+    const me = await $.session.id()
+    const known = activeSteps(await read($, yourSteps))
+    const waitedOn = new Set(goals.filter(goal => goal.status === 'waiting').flatMap(goal => stepsFor(goal, known).map(step => step.id)))
+    if (known.some(step => waitedOn.has(step.id) && step.askedIn !== me)) await changeYourSteps($, list => adopt(list, waitedOn, me))
     await publishCard($)
     const done = goals.filter(goal => goal.status === 'done').length
     const steps = await read($, yourSteps)
@@ -719,10 +827,11 @@ export const register: Register = (on, options) => {
     let archived: YourStep[] = []
     let refused: { id: string; reason: string }[] = []
     const before = await loadYourSteps($)
+    const session = await $.session.id()
     const touched = new Set([...ops.update.map(one => one.id), ...ops.archive.map(one => one.id), ...ops.confirm.map(one => one.id), ...ops.reopen.map(one => one.id)])
     await settle($, note => note.kind === 'step' && note.stepId !== undefined && touched.has(note.stepId))
     const list = await changeYourSteps($, steps => {
-      const applied = applyOps(steps, ops, now, () => crypto.randomUUID().slice(0, 6))
+      const applied = applyOps(steps, ops, now, () => crypto.randomUUID().slice(0, 6), session)
       unknown = applied.unknown
       added = applied.added
       archived = applied.archived
@@ -758,11 +867,15 @@ export const register: Register = (on, options) => {
     ensureSweep($)
     await update($, isWorking, () => true)
     callsSinceGoals = 0
-    if (!NOT_THE_PERSON.has(e.origin.kind)) await update($, board, prev => archive(prev ?? EMPTY))
+    if (!NOT_THE_PERSON.has(e.origin.kind)) {
+      await update($, board, prev => archive(prev ?? EMPTY))
+      const typed = await $.clock.now()
+      await update($, activeAt, () => typed)
+    }
     let ticks: string | undefined
     if (!(e.origin.kind === 'plugin' && e.origin.name === 'overview')) {
       try {
-        const waiting = unheard(await loadYourSteps($))
+        const waiting = ticksFor(await loadYourSteps($), await $.session.id(), await projectKey($), await liveSessions($))
         if (waiting.length > 0) {
           await changeYourSteps($, steps => markHeard(steps, waiting))
           ticks = noteFor(waiting, (await read($, board)).goals)
@@ -927,6 +1040,15 @@ export const register: Register = (on, options) => {
     const filter = await read($, stepFilter)
     const own = await read($, project)
     const clock = await $.clock.now()
+    const me = await $.session.id()
+    const live: LiveSession[] = [...sessions, { id: me, key: own, activeAt: await read($, activeAt) }]
+    /** Where what the person does on a step goes, in the pane's words. */
+    const pickupFor = (step: YourStep, at: string) => {
+      const hearer = hearerOf(step, at, live)
+      const label = at === own ? projectName : (others.find(one => one.key === at)?.label ?? 'its project')
+
+      return pickupLine(hearer, me, live, label, step.askedIn !== undefined && step.askedIn !== hearer)
+    }
     /** Room inside a card: its border and padding take four cells. */
     const inner = Math.max(12, e.props.bodyColumns - 4)
     const projectTitle = projectName !== '' ? projectName.charAt(0).toUpperCase() + projectName.slice(1) : 'This project'
@@ -1055,7 +1177,7 @@ export const register: Register = (on, options) => {
             : note.status === 'queued'
               ? <Text color={TONE.note.color} wrap="wrap">✎ Note queued · Claude reads it at its next step</Text>
               : note.status === 'sent'
-                ? <Text color={TONE.note.color} wrap="wrap">✎ Note sent · Claude is reworking this</Text>
+                ? <Text color={TONE.note.color} wrap="wrap">{note.sentTo !== undefined ? `✎ Note sent to ${note.sentTo}` : '✎ Note sent · Claude is reworking this'}</Text>
                 : (
                     <Box key={`note-error:${where}:${ref.item}`} flexDirection="column">
                       <Text color="error" wrap="wrap">
@@ -1164,6 +1286,8 @@ export const register: Register = (on, options) => {
 
     /** The lines under a step: when, where, what Claude said, where it stands. */
     const stepAbout = (step: YourStep, pickedUpBy: string, isBrief: boolean) => {
+      // Another open session asked for it: what the person does here goes there.
+      const askedBy = step.askedIn !== undefined && step.askedIn !== me ? sessions.find(one => one.id === step.askedIn) : undefined
       const waited = step.due === undefined && step.status === 'todo' ? waitedText(step, clock) : undefined
       const told = step.answer !== undefined ? 'Claude knows · acting on it' : 'Claude knows · confirming'
       const isHeard = step.heard === 'checked' && (step.answer ?? '') === (step.heardAnswer ?? '')
@@ -1171,6 +1295,11 @@ export const register: Register = (on, options) => {
       return (
         <Box key={`about:${step.id}`} flexDirection="column" paddingLeft={2}>
           {deadline(step)}
+          {askedBy !== undefined && step.status === 'todo' && (
+            <Text key={`asked-in:${step.id}`} dimColor wrap="wrap">
+              Asked by {sessionName(askedBy)}
+            </Text>
+          )}
           {step.choices !== undefined && step.defaultChoice !== undefined && step.status === 'todo' && (
             <Text dimColor wrap="wrap">
               No answer keeps: {step.defaultChoice}
@@ -1202,7 +1331,7 @@ export const register: Register = (on, options) => {
     }
 
     /** One step: its control, its title as text, its edit button, then how to answer it and what stands under it. */
-    const stepItem = (step: YourStep, at: string, where: string, hotkey: string | undefined, pickedUpBy: string, isBrief: boolean) => {
+    const stepItem = (step: YourStep, at: string, where: string, hotkey: string | undefined, isBrief: boolean) => {
       const ref: ItemRef = { item: `step:${step.id}`, kind: 'step', title: step.title, stepId: step.id, stepKey: at }
       const kind = answerKind(step)
       const isChecked = step.status === 'checked'
@@ -1268,7 +1397,7 @@ export const register: Register = (on, options) => {
             </Box>
           )}
           {itemEdit(where, ref)}
-          {stepAbout(step, pickedUpBy, isBrief)}
+          {stepAbout(step, pickupFor(step, at), isBrief)}
         </Box>
       )
     }
@@ -1276,7 +1405,7 @@ export const register: Register = (on, options) => {
     /** A step that needs the person soon, in its own card framed in the colour of its urgency. */
     const stepCard = (step: YourStep, tone: Tone, hotkey: string | undefined) => (
       <Box key={`step-card:${step.id}`} flexDirection="column" borderStyle="round" borderColor={TONE[tone].color} borderDimColor paddingX={1} marginTop={1}>
-        {stepItem(step, own, 'move', hotkey, 'Claude will pick it up', false)}
+        {stepItem(step, own, 'move', hotkey, false)}
       </Box>
     )
 
@@ -1518,7 +1647,7 @@ export const register: Register = (on, options) => {
           ]
         : filter === 'archived'
           ? matches.map(archivedRow)
-          : matches.map(step => stepItem(step, own, 'found', undefined, 'Claude will pick it up', true))),
+          : matches.map(step => stepItem(step, own, 'found', undefined, true))),
       <Box key="found-clear" marginTop={1}>
         <Button key="filter-clear" plain dimColor label="✕ Clear search and filter" onPress={() => clearSearch($)} />
       </Box>,
@@ -1566,7 +1695,7 @@ export const register: Register = (on, options) => {
                 </Box>
               ),
               !isNarrowed && laterSteps.length > 0 && fold('later', `${TONE.later.icon} Later · ${laterSteps.length}`),
-              ...(!isNarrowed && open.includes('later') ? laterSteps.map(step => stepItem(step, own, 'later', undefined, 'Claude will pick it up', true)) : []),
+              ...(!isNarrowed && open.includes('later') ? laterSteps.map(step => stepItem(step, own, 'later', undefined, true)) : []),
               !isNarrowed && confirmed.length > 0 && fold('confirmed', `${TONE.done.icon} Confirmed recently · ${confirmed.length}`),
               ...(!isNarrowed && open.includes('confirmed')
                 ? confirmed.map(step => (
@@ -1746,7 +1875,7 @@ export const register: Register = (on, options) => {
             ...others.map(other => (
               <Box key={`project:${other.key}`} flexDirection="column">
                 <Text bold>{other.label}</Text>
-                {sortSteps(other.steps).map(step => stepItem(step, other.key, 'other', undefined, `Claude in ${other.label} will pick it up`, true))}
+                {sortSteps(other.steps).map(step => stepItem(step, other.key, 'other', undefined, true))}
               </Box>
             )),
           ])

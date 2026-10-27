@@ -13,6 +13,7 @@ The mod's plugin name is `overview`.
   - ⌨ **type** an answer in its box and press Enter.
 
   Claude hears about it: at its next step while it works, or in a turn of its own about 30 seconds after you stop, while it is idle.
+- **The right session hears it**: with several sessions open, a tick, a pick, an answer or a ✎ note goes to the session whose Claude asked for the step (or last changed it, or waits on it), not to the session whose pane you used. A step asked for elsewhere says « Asked by Claude in "…" », and a toast tells you where your tick went. When that session is closed, the session you ticked in hears it; a tick on another project's step goes to that project's last-used session, or waits for its next one. Notes on the project map go to the session that sent the map.
 - **⊟ Archive a step**: a step that is no longer relevant can be archived with its ⊟ button. It leaves Your move and its count, and Claude is told. « Archived » (folded) lists archived steps, each with ↺ Restore to bring it back as it was.
 - **Claude archives too, within rules**: only a step it has confirmed done, or one that no longer applies with a reason; anything else is refused. Confirmed steps move to the archive after a week. **Nothing is ever deleted**: every step stays restorable.
 - **Undo**: every archive shows a toast and a « ↺ Undo » bar in Your move for two minutes; `/overview undo` undoes the last one at any time.
@@ -82,7 +83,7 @@ Set them in `/config` (or under `pluginConfigs` in `~/.claude/settings.json`):
 
 ## Your data
 
-Everything stays on your machine, in Claude Code's own plugin store (`~/.claude/plugins/store/`): your steps per repository, the project map, the recent-changes feed and the session cards that let your sessions see each other. Nothing is sent anywhere except to Claude in your own sessions, and to your phone through Claude Code's notifications when you turn them on.
+Everything stays on your machine, in Claude Code's own plugin store (`~/.claude/plugins/store/`): your steps per repository, the project map, the recent-changes feed, the session cards that let your sessions see each other, and the notes waiting for another session to read them. Nothing is sent anywhere except to Claude in your own sessions, and to your phone through Claude Code's notifications when you turn them on.
 
 ## Development
 
