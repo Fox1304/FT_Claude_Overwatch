@@ -18,6 +18,8 @@ test('a step that asks for words gets an answer box, and Claude receives the ans
   expect(await ui.find({ type: 'Text', text: '⌨ ' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'Settle your publisher identity' })).toBeDefined()
   expect((await ui.find({ key: `answer:${step?.id}` }))?.props.placeholder).toBe(`${ASKS}…`)
+  expect(await ui.find({ type: 'Text', text: /☐ tick when done/ })).toBeUndefined()
+  await ui.press({ key: 'fold:help' })
   expect(await ui.find({ type: 'Text', text: /☐ tick when done · ◆ pick one · ⌨ type your answer, then Enter · ✎ tell Claude what to change/ })).toBeDefined()
 
   await ui.input({ key: `answer:${step?.id}`, text: 'Not registered · 3 rue Exemple, Lyon · 06 00 00 00 00' })
@@ -57,6 +59,7 @@ test('on the phone, where there is no box, the step says to answer in the conver
   await $.tool.call({ tool: STEPS, add: [{ title: 'Send the video links', asks: 'The three YouTube links' }] })
   const ui = await $.ui.mount({ ...PANE, surface: 'mobile' })
   expect(await ui.find({ type: 'Text', text: 'Answer in the conversation: The three YouTube links' })).toBeDefined()
+  await ui.press({ key: 'fold:help' })
   expect(await ui.find({ type: 'Text', text: /⌨ type your answer in the conversation/ })).toBeDefined()
   await ui.unmount()
 })

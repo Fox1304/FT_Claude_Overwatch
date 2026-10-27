@@ -1,6 +1,6 @@
 {
   "name": "claude-overwatch",
-  "description": "A Claude Code mod: a pane of what Claude is doing, what comes next and what needs you, in plain words.",
+  "description": "A Claude Code mod: a small dashboard of what Claude is doing, what needs you, and a queue of ideas it works through alone.",
   "owner": {
     "name": "Fox1304",
     "url": "https://github.com/Fox1304"
@@ -9,8 +9,8 @@
     {
       "name": "overview",
       "source": "./",
-      "description": "What Claude is doing now and what needs you, as cards of selectable text, with a note box on every item; plus the steps only you can take",
-      "version": "1.0.0"
+      "description": "A small dashboard beside the chat: Claude's progress and helpers drawn as avatars, the steps only you can take, and a queue of ideas Claude clarifies, files and works through alone",
+      "version": "2.0.0"
     }
   ]
 }

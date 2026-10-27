@@ -147,6 +147,58 @@ export type OtherProject = { key: string; label: string; steps: YourStep[] }
 /** A subagent working in the background. */
 export type Helper = { id: string; description: string }
 
+/** A subagent as the pane draws it: what it does, how far it went, and how it ended. */
+export type CrewMember = {
+  id: string
+  description: string
+  /** Its agent type (`Explore`, `general-purpose`…), which picks its avatar's accessory. */
+  type: string
+  status: 'running' | 'done' | 'failed'
+  /** Tool calls it made so far. */
+  steps: number
+  startedAt: number
+  endedAt?: number
+}
+
+/** Where a queued task stands. */
+export type TaskStatus = 'reading' | 'asking' | 'ready' | 'running' | 'done' | 'failed'
+
+/** A question Claude asks about a dropped idea before filing it, and the person's answer. */
+export type TaskQuestion = { topic: string; question: string; options: string[]; recommended?: number; answer?: string }
+
+/** One task of the person's queue: their words, the brief Claude works from, and where it stands. */
+export type QueueTask = {
+  id: string
+  /** The person's words, as they dropped them. */
+  raw: string
+  /** A short plain title. */
+  title: string
+  /** The task as Claude will run it: goal, context, scope, done when. */
+  brief?: string
+  status: TaskStatus
+  /** On hold: Claude never picks it alone. */
+  isHeld?: boolean
+  questions?: TaskQuestion[]
+  /** Question rounds asked so far: after two, Claude files it with its assumptions. */
+  rounds?: number
+  /** Why reading or running it failed. */
+  error?: string
+  /** Who added it: the person in the pane, or Claude through its tool. */
+  addedBy?: 'person' | 'claude'
+  createdAt: number
+  startedAt?: number
+  /** The session that runs it. */
+  startedIn?: string
+  doneAt?: number
+  /** Claude's one line on what it did, once finished. */
+  outcome?: string
+  /** Removed by the person: kept under « Removed », restorable. */
+  removedAt?: number
+}
+
+/** A project's queue, kept in the store under `queue:<root>`. */
+export type Queue = { tasks: QueueTask[]; autopilot: boolean }
+
 /** What a session is doing, as it publishes it for the other sessions' panes. */
 export type SessionCard = {
   id: string
@@ -161,6 +213,10 @@ export type SessionCard = {
   key?: string
   /** When the person last typed in the session (else when it started): the project's last-used session hears what a closed one would have. */
   activeAt?: number
+  /** How far its task is, 0 to 100. */
+  percent?: number
+  /** Its helpers, running and recently finished, so every pane can draw them. */
+  crew?: CrewMember[]
 }
 
 /** One line of what was done for a goal; repeats of the same line are counted. */
@@ -213,6 +269,22 @@ declare module 'claude-code' {
       editProblem: string
       /** Notes the person left on items, until Claude has reworked them. */
       notes: ItemNote[]
+      /** This project's task queue, as last read from the store. */
+      queue: Queue
+      /** The subagents of this session, running and recently finished. */
+      crew: CrewMember[]
+      /** Which sections of the pane are open, by section; kept in the store too. */
+      sections: Record<string, boolean>
+      /** When the next queued task starts by itself (0: no countdown). */
+      autoStartAt: number
+      /** The person said « not now »: no task starts alone until they next type. */
+      isSnoozed: boolean
+      /** Claude's last answer ended on a question to the person: no task starts alone. */
+      isAsking: boolean
+      /** The queue tasks whose brief the person opened. */
+      openTasks: string[]
+      /** What the person is typing in the idea box, emptied once the idea is dropped. */
+      ideaDraft: string
     }
   }
 }

@@ -125,9 +125,11 @@ test('every kind of item has an edit button: goals, steps, map parts and milesto
   })
   const [approve, later] = w.steps()
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  for (const key of [`edit:now:goal:${GOAL}`, 'edit:next:goal:Invoices go out by mail', `edit:move:step:${approve?.id}`]) {
+  for (const key of [`edit:now:goal:${GOAL}`, `edit:move:step:${approve?.id}`]) {
     expect(await ui.find({ key })).toBeDefined()
   }
+  await ui.press({ key: 'fold:goals' })
+  expect(await ui.find({ key: 'edit:all:goal:Invoices go out by mail' })).toBeDefined()
   await ui.press({ key: 'fold:later' })
   expect(await ui.find({ key: `edit:later:step:${later?.id}` })).toBeDefined()
   await ui.press({ key: 'fold:map' })
@@ -140,7 +142,7 @@ test('every kind of item has an edit button: goals, steps, map parts and milesto
   await ui.unmount()
 })
 
-test('the pane draws only text and controls, no pictures, so any text can be selected', async ($, on) => {
+test('drawings carry no words of their own: every title stays selectable text', async ($, on) => {
   world(on)
   mock.clock(on, { now: AFTERNOON })
   await $.tool.call({ tool: GOALS, summary: 'Payments in euros', goals: [{ title: GOAL, status: 'active' }] })
@@ -148,7 +150,10 @@ test('the pane draws only text and controls, no pictures, so any text can be sel
   for (const surface of ['desktop', 'mobile', 'vscode'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     await ui.press({ key: 'fold:map' })
-    expect(await ui.find({ type: 'Svg' })).toBeUndefined()
+    const drawings = await ui.findAll({ type: 'Svg' })
+    expect(drawings.length).toBeGreaterThan(0)
+    expect(drawings.every(drawing => typeof drawing.props.alt === 'string' && drawing.props.alt !== '')).toBe(true)
+    expect(drawings.some(drawing => String(drawing.props.source).includes(GOAL))).toBe(false)
     const buttons = await ui.findAll({ type: 'Button' })
     expect(buttons.some(button => button.text.includes(GOAL))).toBe(false)
     expect(await ui.find({ type: 'Text', text: GOAL })).toBeDefined()

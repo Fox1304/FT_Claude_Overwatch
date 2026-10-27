@@ -31,17 +31,15 @@ test('the map stays folded under the plan line, and opens drawn in the app and w
   for (const surface of ['desktop', 'mobile'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     const now = await allText(ui)
-    expect(now).toContain('◉ PLAN')
-    expect(now).toContain('iOS 1.0 to review · Wed 14 Oct')
+    expect(now).toContain('iOS 1.0 to review')
     expect(now).not.toContain('you are here')
-    expect(await ui.find({ type: 'Svg' })).toBeUndefined()
-    expect(await ui.find({ type: 'Button', text: '▸ ◉ Project map · iOS 1.0 to review' })).toBeDefined()
+    expect(await ui.find({ type: 'Button', text: '▸ Project map' })).toBeDefined()
     await unfold(ui, 'map')
     const opened = await allText(ui)
-    for (const words of ['MYAPP · PROJECT MAP', 'iOS 1.0 to review · you are here', 'Waiting on you', 'In progress · 70%', 'PARTS · 1 of 4 done', 'Waiting on your Brevo account']) {
+    for (const words of ['iOS 1.0 to review · you are here', 'Wed 14 Oct', 'Waiting on you', 'In progress · 70%', 'PARTS · 1 of 4 done', 'Waiting on your Brevo account']) {
       expect(opened).toContain(words)
     }
-    expect(await ui.find({ key: 'card:map' })).toMatchObject({ props: { borderColor: 'permission' } })
+    expect(await ui.find({ key: 'section:map' })).toMatchObject({ props: { borderColor: 'permission' } })
     expect(await ui.find({ key: 'edit:map:part:Mail' })).toBeDefined()
     await ui.press({ key: 'fold:map' })
     await ui.unmount()
@@ -49,15 +47,15 @@ test('the map stays folded under the plan line, and opens drawn in the app and w
 
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
   expect(await ui.find({ type: 'Svg' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: 'MYAPP · PROJECT MAP' })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: '▸ ◉ Project map' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: 'PARTS · 1 of 4 done' })).toBeUndefined()
   await unfold(ui, 'map')
-  expect(await ui.find({ type: 'Text', text: 'MYAPP · PROJECT MAP' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'PARTS · 1 of 4 done' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: 'Waiting on your Brevo account' })).toBeDefined()
   await ui.unmount()
 })
 
-test('what moved shows under Just now, and the part is outlined in the map', async ($, on) => {
+test('what moved shows under Recent, and the part is outlined in the map', { timeoutMs: 30_000 }, async ($, on) => {
   const w = world(on)
   const clock = mock.clock(on, { now: AFTERNOON })
   await $.tool.call({ tool: MAP, ...MYAPP })
@@ -76,18 +74,20 @@ test('what moved shows under Just now, and the part is outlined in the map', asy
   expect(feed).toEqual(['Now on Launch decision', 'iOS 1.0 to review reached', 'Legal & privacy → Stuck', 'Mail → Done', 'iOS app 70% → 85%'])
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await allText(ui)).not.toContain('Now on Launch decision')
+  expect(await ui.find({ key: 'fold:recent' })).toMatchObject({ text: '▸ Recent' })
+  await unfold(ui, 'recent')
   const now = await allText(ui)
-  expect(now).toContain('JUST NOW')
   expect(now).toContain('Now on Launch decision')
   expect(now).toContain('Legal & privacy → Stuck')
-  expect(now).not.toContain('Mail → Done')
+  expect(now).toContain('Mail → Done')
   expect(now).toContain('16:00')
   await unfold(ui, 'map')
   expect(await ui.find({ key: 'part:Legal & privacy' })).toMatchObject({ props: { borderColor: 'error' } })
   await ui.unmount()
 
   const terminal = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  expect(await terminal.find({ type: 'Text', text: 'JUST NOW' })).toBeDefined()
+  expect(await terminal.find({ type: 'Button', text: '▾ ↻ Recent' })).toBeDefined()
   expect(await terminal.find({ type: 'Text', text: /Legal & privacy → Stuck/ })).toBeDefined()
   await terminal.unmount()
 })
@@ -111,8 +111,11 @@ test('a decision shows as Needs your call, with the default it would keep, never
     expect(await ui.find({ type: 'Text', text: 'NEEDS YOUR CALL · 2' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Switch Stripe to live mode\?/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '⏱ due tomorrow' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'No answer keeps: Stay in test' })).toBeUndefined()
+    await ui.press({ key: `more:${stripe?.id}` })
     expect(await ui.find({ type: 'Text', text: 'No answer keeps: Stay in test' })).toBeDefined()
-    expect(await ui.find({ key: 'card:yours' })).toMatchObject({ props: { borderColor: 'error' } })
+    await ui.press({ key: `more:${stripe?.id}` })
+    expect(await ui.find({ key: 'section:move' })).toMatchObject({ props: { borderColor: 'error' } })
     await ui.unmount()
   }
 

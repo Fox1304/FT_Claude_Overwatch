@@ -22,3 +22,7 @@ coverage/
 .idea/
 .vscode/
 *.swp
+
+# Compiled copies of the TypeScript sources: the engine runs the sources themselves
+hooks/*.js
+tests/*.js

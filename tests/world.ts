@@ -1,6 +1,6 @@
 import type { AgentStatus, On } from 'claude-code'
 
-import type { YourStep } from '../types'
+import type { QueueTask, YourStep } from '../types'
 
 export const KEY = 'yourSteps:/work/myapp'
 export const OTHER_KEY = 'yourSteps:/work/otherapp'
@@ -48,6 +48,9 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
   const toasts: string[] = []
   const logs: string[] = []
   const agents: Agent[] = []
+  /** What Claude answers when the mod reads an idea, one reply per call; and what it was asked. */
+  const replies: string[] = []
+  const reads: { model: string; prompt: string }[] = []
   on('store.get', ($, e) => ({ value: stored[e.key] }))
   on('store.set', ($, e) => {
     stored[e.key] = e.value
@@ -76,6 +79,17 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
     value: { root: '/work/myapp', remote: 'git@github.com:octocat/myapp.git', internal: false, name: null },
   }))
   on('agent.list', () => ({ value: agents }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('fs.read', () => ({ value: '' }))
+  on('model.complete', ($, e) => {
+    const prompt = String(e.prompt)
+    reads.push({ model: e.model, prompt })
+    const text = replies.shift()
+    const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }
+
+    return { value: text === undefined ? { isAnswered: false, reason: 'empty-reply', usage } : { isAnswered: true, text, usage } }
+  })
   on('prompt.submit', ($, e) => {
     if (options.failPrompts?.now) return { drop: 'the session is offline' }
     prompts.push({ text: e.text, context: e.context ?? [] })
@@ -95,5 +109,7 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
     return (Array.isArray(value) ? value : (value?.steps ?? [])) as YourStep[]
   }
 
-  return { stored, prompts, phone, toasts, logs, agents, me, steps: () => stepsAt(KEY), stepsAt }
+  const queued = () => ((stored['queue:/work/myapp'] as { tasks?: QueueTask[] } | undefined)?.tasks ?? []) as QueueTask[]
+
+  return { stored, prompts, phone, toasts, logs, agents, me, replies, reads, queued, steps: () => stepsAt(KEY), stepsAt }
 }

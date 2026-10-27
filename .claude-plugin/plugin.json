@@ -1,7 +1,7 @@
 {
   "name": "overview",
-  "version": "1.3.1",
-  "description": "What Claude is doing now and what needs you, as cards of selectable text, with a note box on every item; plus the steps only you can take",
+  "version": "2.0.0",
+  "description": "A small dashboard beside the chat: Claude's progress and helpers drawn as avatars, the steps only you can take, and a queue of ideas Claude clarifies, files and works through alone",
   "author": {
     "name": "Fox1304",
     "url": "https://github.com/Fox1304"
@@ -27,6 +27,13 @@
       "title": "Phone alerts for your steps",
       "description": "Tell your phone when Claude adds a step only you can take, or reopens one (sent only when you are away from the session).",
       "default": true
+    },
+    "autoStartSeconds": {
+      "type": "number",
+      "title": "Start the next queued task after (seconds)",
+      "description": "Once Claude has finished and nothing else is open, how long the pane counts down before it starts the next ready task of Up next by itself. 0: never by itself, only with Start now.",
+      "default": 60
     }
-  }
+  },
+  "icon": "./.claude-plugin/icon.png"
 }

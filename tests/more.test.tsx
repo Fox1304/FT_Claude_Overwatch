@@ -72,6 +72,6 @@ test('Claude updates a step: new words, a moved date, more and links', async ($,
   expect(w.steps()[0]?.due).toBeUndefined()
 
   const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect(await pane.find({ type: 'Button', text: '▸ More' })).toBeDefined()
+  expect(await pane.find({ type: 'Button', text: '▸ Details' })).toBeDefined()
   await pane.unmount()
 })

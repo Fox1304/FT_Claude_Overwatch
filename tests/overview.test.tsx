@@ -40,7 +40,7 @@ test('the pane shows the goals as now, next and done on every surface', async ($
     expect(await ui.find({ type: 'Text', text: '1/3' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'The shop shows drop prices' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '60%' })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: 'NEXT' })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: 'Next: Testers get the new build' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'DONE' })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: 'Rewards give drops' })).toBeDefined()
     await ui.unmount()

@@ -1,4 +1,4 @@
-import type { Action, Board, SessionCard, YourStep } from '../types'
+import type { Action, Board, CrewMember, SessionCard, YourStep } from '../types'
 import { isBlocked } from './goals'
 
 export const SESSION_PREFIX = 'session:'
@@ -111,10 +111,13 @@ export const cardFor = (
   now: number,
   key?: string,
   activeAt?: number,
+  crew?: readonly CrewMember[],
 ): SessionCard => {
   const { summary, goals } = board
   const done = goals.filter(goal => goal.status === 'done').length
-  const active = goals.find(goal => goal.status === 'active')?.title
+  const current = goals.find(goal => goal.status === 'active')
+  const active = current?.title
+  const percent = goals.length === 0 ? 0 : Math.round(((done + (current?.progress ?? 0) / 100) / goals.length) * 100)
   const state: SessionCard['state'] =
     goals.length > 0 && done === goals.length
       ? 'done'
@@ -137,14 +140,7 @@ export const cardFor = (
     updatedAt: now,
     ...(key !== undefined ? { key } : {}),
     ...(activeAt !== undefined ? { activeAt } : {}),
+    ...(goals.length > 0 ? { percent } : {}),
+    ...(crew !== undefined && crew.length > 0 ? { crew: [...crew] } : {}),
   }
-}
-
-/** The card's words in another session's pane. */
-export const cardLine = (card: SessionCard) => {
-  const what = card.summary || card.active || (card.state === 'idle' ? 'No task right now' : 'A task')
-  const progress = card.total > 0 ? ` · ${card.done} of ${card.total} done` : ''
-  const state = { working: 'working', waiting: 'waiting for you', paused: 'paused', done: 'all done', idle: 'idle' }[card.state]
-
-  return `${what}${progress} · ${state}`
 }

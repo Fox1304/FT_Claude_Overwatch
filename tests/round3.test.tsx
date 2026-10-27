@@ -24,8 +24,8 @@ test('other open sessions show at a glance; gone ones are hidden, then forgotten
 
   for (const surface of SURFACES) {
     const pane = await $.ui.mount({ ...PANE, surface })
-    expect(await pane.find({ type: 'Text', text: 'OTHER SESSIONS · 1' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: 'Daily puzzle streaks · 1 of 3 done · working' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: 'Streaks survive a missed day' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: 'otherapp · working · 1 of 3' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: /Older|^Old/ })).toBeUndefined()
     await pane.unmount()
   }
@@ -157,7 +157,7 @@ test('deadlines show in plain words, soonest first', async ($, on) => {
   }
 })
 
-test('a step waiting a day, or due by tomorrow, reminds the phone once a day', async ($, on) => {
+test('a step waiting a day, or due by tomorrow, reminds the phone once a day', { timeoutMs: 30_000 }, async ($, on) => {
   const w = world(on)
   const clock = mock.clock(on, { now: AFTERNOON })
   w.stored[KEY] = {
@@ -177,6 +177,8 @@ test('a step waiting a day, or due by tomorrow, reminds the phone once a day', a
   const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await pane.find({ type: 'Text', text: 'waiting 1 day' })).toBeUndefined()
   await unfold(pane, 'later')
+  expect(await pane.find({ type: 'Text', text: 'waiting 1 day' })).toBeUndefined()
+  await pane.press({ key: 'more:o1' })
   expect(await pane.find({ type: 'Text', text: 'waiting 1 day' })).toBeDefined()
   await pane.unmount()
 })

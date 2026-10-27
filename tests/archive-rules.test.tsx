@@ -127,6 +127,8 @@ test('Your move can be searched (accents ignored) and filtered, archive included
   const [apple] = w.steps()
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: `archive:move:${apple?.id}` })
+  expect(await ui.find({ key: 'filter:decide' })).toBeUndefined()
+  await ui.press({ key: 'fold:search' })
   expect((await ui.find({ key: 'filter:decide' }))?.text).toBe('○ Decisions · 1')
   expect((await ui.find({ key: 'filter:overdue' }))?.text).toBe('○ Overdue · 1')
   expect((await ui.find({ key: 'filter:archived' }))?.text).toBe('○ Archived · 1')
