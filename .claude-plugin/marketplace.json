@@ -10,7 +10,7 @@
       "name": "overview",
       "source": "./",
       "description": "A small dashboard beside the chat: Claude's progress and helpers drawn as avatars, the steps only you can take, and a queue of ideas Claude clarifies, files and works through alone",
-      "version": "2.0.0"
+      "version": "2.1.0"
     }
   ]
 }

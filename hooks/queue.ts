@@ -1,4 +1,6 @@
 import type { Queue, QueueTask, TaskQuestion } from '../types'
+import { ownerOf } from './routing'
+import type { LiveSession } from './routing'
 
 /** The store key prefix of a project's queue: `queue:<repository main root>`. */
 export const QUEUE_PREFIX = 'queue:'
@@ -60,6 +62,7 @@ const readTask = (value: unknown): QueueTask | undefined => {
     ...optional('error'),
     ...optional('outcome'),
     ...optional('startedIn'),
+    ...optional('askedIn'),
     ...(one?.isHeld === true ? { isHeld: true } : {}),
     ...(questions !== undefined && questions.length > 0 ? { questions } : {}),
     ...(number('rounds') !== undefined ? { rounds: number('rounds') } : {}),
@@ -88,8 +91,16 @@ export const doneTasks = (tasks: readonly QueueTask[]) =>
 /** Tasks the person removed, newest first. */
 export const removedTasks = (tasks: readonly QueueTask[]) => tasks.filter(task => task.removedAt !== undefined).sort((a, b) => (b.removedAt ?? 0) - (a.removedAt ?? 0))
 
-/** The task Claude takes next by itself: the first ready one not on hold. */
-export const nextTask = (tasks: readonly QueueTask[]) => pendingTasks(tasks).find(task => task.status === 'ready' && task.isHeld !== true)
+/** The task a session takes next by itself: the first ready one not on hold that was written in it. */
+export const nextTask = (tasks: readonly QueueTask[], session: string) =>
+  pendingTasks(tasks).find(task => task.status === 'ready' && task.isHeld !== true && task.askedIn === session)
+
+/** A task still to do whose session is closed (or was never recorded): it waits for the person to say where it runs. */
+export const isOrphaned = (task: QueueTask, live: readonly LiveSession[]) =>
+  task.removedAt === undefined && task.status !== 'done' && task.status !== 'running' && ownerOf(task, live) === undefined
+
+/** The task attached to another session, as the person chose. */
+export const attachTask = (task: QueueTask, session: string): QueueTask => ({ ...task, askedIn: session })
 
 /** Keeps every task still to do, and the latest finished and removed ones. */
 export const pruneQueue = (tasks: readonly QueueTask[]) => {
@@ -118,8 +129,9 @@ export const moveTask = (tasks: readonly QueueTask[], id: string, by: -1 | 1) =>
 }
 
 /** A new task out of the person's words, to be read before it is ready. */
-export const newTask = (raw: string, id: string, now: number): QueueTask => ({
+export const newTask = (raw: string, id: string, now: number, session: string): QueueTask => ({
   id,
+  askedIn: session,
   raw: raw.trim(),
   title: titleFrom(raw),
   status: 'reading',
@@ -269,7 +281,7 @@ export const parseQueueOps = (args: Record<string, unknown>): QueueOps => {
 }
 
 /** Applies Claude's changes to the queue; ids it does not know come back apart. */
-export const applyQueueOps = (tasks: readonly QueueTask[], ops: QueueOps, now: number, newId: () => string) => {
+export const applyQueueOps = (tasks: readonly QueueTask[], ops: QueueOps, now: number, newId: () => string, session: string) => {
   const unknown: string[] = []
   const finished: QueueTask[] = []
   let list = [...tasks]
@@ -290,7 +302,7 @@ export const applyQueueOps = (tasks: readonly QueueTask[], ops: QueueOps, now: n
     finished.push(done)
     list = changeTask(list, one.id, () => done)
   }
-  const added = ops.add.map((one): QueueTask => ({ id: newId(), raw: one.brief, title: one.title, brief: one.brief, status: 'ready', addedBy: 'claude', createdAt: now }))
+  const added = ops.add.map((one): QueueTask => ({ id: newId(), raw: one.brief, title: one.title, brief: one.brief, status: 'ready', addedBy: 'claude', askedIn: session, createdAt: now }))
 
   return { list: pruneQueue([...list, ...added]), unknown, added, finished }
 }

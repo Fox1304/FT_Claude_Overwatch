@@ -18,9 +18,11 @@ import {
   READ_SYSTEM,
   applyQueueOps,
   applyRead,
+  attachTask,
   changeTask,
   describeQueue,
   doneTasks,
+  isOrphaned,
   launchText,
   launchedTitle,
   moveTask,
@@ -206,8 +208,14 @@ let callsSinceGoals = 0
 let lastCard = ''
 let lastCardAt = 0
 let autoStartMs = AUTO_START_DEFAULT_SECONDS * 1000
-/** Whether Claude has finished a turn in this session: a session just opened never starts a queued task alone. */
-let hasFinishedTurn = false
+/**
+ * When Claude last finished a turn in this session (0: not yet, so a session just opened never starts
+ * a queued task alone). The session is free once it has been idle for `pickupMs`, the same wait the
+ * person's ticks get before an idle Claude picks them up.
+ */
+let idleSince = 0
+/** The ideas whose closed session this session has already told the person about. */
+const toldOrphans = new Set<string>()
 /** Tool calls each helper made, counted as they run and shown at the next look. */
 const crewSteps = new Map<string, number>()
 
@@ -622,7 +630,8 @@ const dropIdea = async ($: EngineInterface, words: string, waitForRead = false) 
   await update($, ideaDraft, () => '')
   const id = crypto.randomUUID().slice(0, 6)
   const now = await $.clock.now()
-  await changeQueue($, current => ({ ...current, tasks: [...current.tasks, newTask(raw, id, now)] }))
+  const session = await $.session.id()
+  await changeQueue($, current => ({ ...current, tasks: [...current.tasks, newTask(raw, id, now, session)] }))
   const reading = readIdea($, id).catch(error => $.ui.log(`overview: idea not read: ${String(error)}`, { to: 'debug' }))
   if (waitForRead) await reading
 
@@ -708,7 +717,7 @@ const launchTask = async ($: EngineInterface, id: string) => {
     const task = current.tasks.find(one => one.id === id)
     if (task === undefined || task.removedAt !== undefined || (task.status !== 'ready' && task.status !== 'failed') || task.brief === undefined) return current
     const { error: _error, isHeld: _held, ...rest } = task
-    claimed = { ...rest, status: 'running', startedAt: now, startedIn: me }
+    claimed = { ...rest, askedIn: me, status: 'running', startedAt: now, startedIn: me }
 
     return { ...current, tasks: changeTask(current.tasks, id, () => claimed as QueueTask) }
   })
@@ -728,16 +737,17 @@ const launchTask = async ($: EngineInterface, id: string) => {
   return true
 }
 
-/** « Start now »: runs the task at once when Claude is free, else puts it first in line. */
+/** « Start now » (or « Run here »): runs the task in this session at once when Claude is free, else attaches it here, first in line. */
 const startQueued = async ($: EngineInterface, id: string) => {
   ensureSweep($)
   if (await read($, isWorking)) {
+    const me = await $.session.id()
     await changeQueue($, current => {
       const task = current.tasks.find(one => one.id === id)
       if (task === undefined) return current
       const { isHeld: _held, ...rest } = task
 
-      return { ...current, tasks: [rest, ...current.tasks.filter(one => one.id !== id)] }
+      return { ...current, tasks: [attachTask(rest, me), ...current.tasks.filter(one => one.id !== id)] }
     })
     $.ui.toast('Claude is busy: this task goes first and starts when it is done', { timeoutMs: 6000 })
 
@@ -746,14 +756,33 @@ const startQueued = async ($: EngineInterface, id: string) => {
   await launchTask($, id)
 }
 
+/** The person sends an idea whose session is closed to another open session: it runs there once that one is free. */
+const sendQueued = async ($: EngineInterface, id: string, session: string) => {
+  ensureSweep($)
+  await changeQueued($, id, task => attachTask(task, session))
+  toldOrphans.delete(id)
+}
+
+/** Tells the person, once per idea, that an idea's session is closed and the pane waits for their choice. */
+const tellOrphans = async ($: EngineInterface) => {
+  const live = await liveSessions($)
+  for (const task of pendingTasks((await read($, queue)).tasks)) {
+    if (!isOrphaned(task, live) || toldOrphans.has(task.id)) continue
+    toldOrphans.add(task.id)
+    $.ui.toast(`Its session is closed: choose where « ${task.title} » runs, in Up next`, { timeoutMs: 8000 })
+  }
+}
+
 /**
- * The task this session would start alone now: autopilot on, Claude finished and free, nothing
- * open on the board or waiting to be heard, no question to the person pending, this session the
- * project's last used, and no other queued task running in an open session.
+ * The task this session would start alone now: one written in this session, which is free (idle for
+ * `pickupMs`, no question to the person pending, nothing open on the board or waiting to be heard),
+ * with autopilot on and none of its queued tasks running. Never another session's task, whichever the
+ * person last used.
  */
 const taskToPick = async ($: EngineInterface) => {
-  if (autoStartMs <= 0 || !hasFinishedTurn) return undefined
+  if (autoStartMs <= 0 || idleSince === 0) return undefined
   if ((await read($, isWorking)) || (await read($, isSnoozed)) || (await read($, isAsking))) return undefined
+  if ((await $.clock.now()) - idleSince < pickupMs) return undefined
   const current = await read($, queue)
   if (!current.autopilot) return undefined
   if ((await read($, board)).goals.some(goal => goal.status !== 'done')) return undefined
@@ -762,12 +791,10 @@ const taskToPick = async ($: EngineInterface) => {
   const me = await $.session.id()
   const own = await projectKey($)
   const live = await liveSessions($)
-  if (heirOf(live, own)?.id !== me) return undefined
   if (ticksFor(await read($, yourSteps), me, own, live).length > 0) return undefined
-  const isRunning = pendingTasks(current.tasks).some(task => task.status === 'running' && live.some(one => one.id === task.startedIn))
-  if (isRunning) return undefined
+  if (pendingTasks(current.tasks).some(task => task.status === 'running' && task.startedIn === me)) return undefined
 
-  return nextTask(current.tasks)
+  return nextTask(current.tasks, me)
 }
 
 /** Counts down to the next queued task, and starts it when the time comes. */
@@ -836,6 +863,7 @@ const sweep = async ($: EngineInterface) => {
   await settle($, () => false)
   await takeInbox($)
   await loadQueue($)
+  await tellOrphans($)
   if (!(await read($, isWorking))) {
     const queued = (await read($, notes)).filter(note => note.status === 'queued')
     if (queued.length > 0) await deliverNotes($, queued.map(note => note.item))
@@ -1119,10 +1147,11 @@ export const register: Register = (on, options) => {
     const ops = parseQueueOps(e as unknown as Record<string, unknown>)
     if (ops.add.length + ops.update.length + ops.finish.length === 0) return { result: describeQueue(await loadQueue($)) }
     const now = await $.clock.now()
+    const session = await $.session.id()
     let unknown: string[] = []
     let finished: QueueTask[] = []
     const after = await changeQueue($, current => {
-      const applied = applyQueueOps(current.tasks, ops, now, () => crypto.randomUUID().slice(0, 6))
+      const applied = applyQueueOps(current.tasks, ops, now, () => crypto.randomUUID().slice(0, 6), session)
       unknown = applied.unknown
       finished = applied.finished
 
@@ -1311,7 +1340,7 @@ export const register: Register = (on, options) => {
       const queued = (await read($, notes)).filter(note => note.status === 'queued')
       if (queued.length > 0) await deliverNotes($, queued.map(note => note.item))
       try {
-        hasFinishedTurn = true
+        idleSince = await $.clock.now()
         const lastLine = e.answer.trim().split('\n').filter(line => line.trim() !== '').pop() ?? ''
         await update($, isAsking, () => /[?？]\s*\**\s*$/.test(lastLine))
         // Interrupted: the person is at the keyboard; nothing starts alone until they type.
@@ -1585,7 +1614,7 @@ export const register: Register = (on, options) => {
 
     /** The fold switch of a part of the pane, with its count. */
     const fold = (part: string, text: string) => (
-      <Box key={`fold:${part}`} marginTop={1}>
+      <Box key={`fold-at:${part}`} marginTop={1}>
         <Button key={`fold:${part}`} plain dimColor label={`${open.includes(part) ? '▾' : '▸'} ${text}`} onPress={() => toggleFold($, part)} />
       </Box>
     )
@@ -1853,7 +1882,7 @@ export const register: Register = (on, options) => {
       const isOpen = opened.includes(goal.title)
 
       return (
-        <Box key={`acts:${where}:${goal.title}`} flexDirection="column" paddingLeft={2}>
+        <Box key={`acts-at:${where}:${goal.title}`} flexDirection="column" paddingLeft={2}>
           <Button
             key={`acts:${where}:${goal.title}`}
             plain
@@ -2048,7 +2077,7 @@ export const register: Register = (on, options) => {
     ]
 
     // ── COUNTDOWN: the next queued task, about to start by itself ─────────────────────────
-    const upNext = startsAt > 0 ? nextTask(tasks.tasks) : undefined
+    const upNext = startsAt > 0 ? nextTask(tasks.tasks, me) : undefined
     const countdown = upNext !== undefined && (
       <Box key="countdown" flexDirection="column" marginTop={1} borderStyle="round" borderColor={TONE.claude.color} paddingX={1}>
         <Text wrap="wrap">
@@ -2321,6 +2350,10 @@ export const register: Register = (on, options) => {
       const isStopped = task.status === 'running' && shown.icon === '⚠'
       const canStart = (task.status === 'ready' || task.status === 'failed') && task.brief !== undefined
       const changeBox = `queue::${task.id}`
+      // Where it runs: the session it was written in; a closed one waits for the person to choose.
+      const isLost = isOrphaned(task, live)
+      const owner = isLost || task.askedIn === me ? undefined : sessions.find(one => one.id === task.askedIn)
+      const elsewhereHere = sessions.filter(one => one.key === own && one.id !== task.askedIn)
 
       return (
         <Box key={`task:${task.id}`} flexDirection="column" marginTop={1}>
@@ -2353,12 +2386,33 @@ export const register: Register = (on, options) => {
                 {shown.icon} {shown.text}
               </Text>
             )}
-            {canStart && task.isHeld !== true && <Button key={`task-start:${task.id}`} plain label="▶ Start now" onPress={() => startQueued($, task.id)} />}
+            {canStart && task.isHeld !== true && !isLost && <Button key={`task-start:${task.id}`} plain label="▶ Start now" onPress={() => startQueued($, task.id)} />}
             {(task.status === 'failed' || isStopped) && <Button key={`task-retry:${task.id}`} plain label="↻ Try again" onPress={() => retryQueued($, task.id)} />}
             {task.brief !== undefined && (
               <Button key={`task-open:${task.id}`} plain dimColor={!isBriefOpen} label={isBriefOpen ? '▾ Brief' : '▸ Brief'} onPress={() => toggleTaskOpen($, task.id)} />
             )}
           </Box>
+          {owner !== undefined && (
+            <Box key={`task-owner:${task.id}`} paddingLeft={3}>
+              <Text dimColor wrap="wrap">
+                Runs in {sessionName(owner)}
+              </Text>
+            </Box>
+          )}
+          {isLost && (
+            <Box key={`task-lost:${task.id}`} flexDirection="column" paddingLeft={3}>
+              <Text color={TONE.soon.color} wrap="wrap">
+                ⚠ The session it was written in is closed. Where should it run?
+              </Text>
+              <Box key={`task-lost-choices:${task.id}`} flexDirection="row" flexWrap="wrap" columnGap={2}>
+                <Button key={`task-here:${task.id}`} plain label="▶ Run here" onPress={() => startQueued($, task.id)} />
+                {elsewhereHere.map(one => (
+                  <Button key={`task-send:${task.id}:${one.id}`} plain label={`→ ${sessionName(one)}`} onPress={() => sendQueued($, task.id, one.id)} />
+                ))}
+                <Button key={`task-dismiss:${task.id}`} plain dimColor label="⊟ Dismiss" onPress={() => removeQueued($, task.id)} />
+              </Box>
+            </Box>
+          )}
           {task.status === 'asking' && (
             <Box key={`task-questions:${task.id}`} flexDirection="column" paddingLeft={3}>
               {(task.questions ?? []).map((question, at) => (

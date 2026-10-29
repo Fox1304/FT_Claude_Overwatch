@@ -134,3 +134,30 @@ test("every open session's Claude and its helpers show at work, each named by wh
   // This session's card carries its helpers to the other panes.
   expect(w.stored['session:S1']).toMatchObject({ crew: [{ id: 'a1', description: 'Check the store listing', status: 'running' }] })
 })
+
+test('no key is used twice in the pane, with every fold open', async ($, on) => {
+  const w = world(on)
+  mock.clock(on, { now: AFTERNOON })
+  w.stored[KEY] = {
+    label: 'myapp',
+    steps: Array.from({ length: 6 }, (_, i) => ({ id: `s${i}`, title: `Later step ${i}`, status: 'todo', heard: 'todo', due: '2026-12-01', more: 'x', createdAt: 0 })),
+  }
+  await $.tool.call({ tool: 'mcp__overview__your_steps' })
+  await $.tool.call({ tool: GOALS, goals: [{ title: 'Testers get the new build', status: 'active' }] })
+  await $.tool.call({ tool: 'mcp__fake__build' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  for (const part of ['later', 'goals', 'help', 'search']) await ui.press({ key: `fold:${part}` })
+  await ui.press({ key: 'acts:all:Testers get the new build' })
+  const seen = new Map<string, number>()
+  const walk = (node: unknown) => {
+    const element = node as { props?: { key?: unknown }; children?: unknown[] } | null
+    if (element === null || typeof element !== 'object') return
+    const key = element.props?.key
+    if (typeof key === 'string') seen.set(key, (seen.get(key) ?? 0) + 1)
+    for (const child of element.children ?? []) walk(child)
+  }
+  walk(await ui.drawn())
+  expect([...seen].filter(([, count]) => count > 1).map(([key]) => key)).toEqual([])
+  expect(await ui.find({ key: 'fold:later' })).toMatchObject({ type: 'Button', text: '▾ ○ Later · 6' })
+  await ui.unmount()
+})

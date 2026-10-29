@@ -14,6 +14,15 @@ export const heirOf = (live: readonly LiveSession[], key: string) =>
     .filter(session => session.key === key)
     .sort((a, b) => (b.activeAt ?? 0) - (a.activeAt ?? 0) || a.id.localeCompare(b.id))[0]
 
+/** Whether a session is open now: this one, or another whose card is fresh. */
+export const isOpenSession = (id: string | undefined, live: readonly LiveSession[]) => id !== undefined && live.some(session => session.id === id)
+
+/**
+ * The session an item is attached to, while it is open: the one that asked for a step, or the one
+ * an idea was written in; undefined when that session is closed or none was recorded.
+ */
+export const ownerOf = (trail: Pick<Trail, 'askedIn'>, live: readonly LiveSession[]) => (isOpenSession(trail.askedIn, live) ? trail.askedIn : undefined)
+
 /**
  * The session that hears what the person did on an item of project `key`: the session that asked
  * for it while it is open; else the session the person did it in, when that one is of the
@@ -21,9 +30,9 @@ export const heirOf = (live: readonly LiveSession[], key: string) =>
  * (the next one to open hears it).
  */
 export const hearerOf = (trail: Trail, key: string, live: readonly LiveSession[]) => {
-  const isOpen = (id: string | undefined) => id !== undefined && live.some(session => session.id === id)
-  if (isOpen(trail.askedIn)) return trail.askedIn
-  if (trail.tickedFrom === key && isOpen(trail.tickedIn)) return trail.tickedIn
+  const owner = ownerOf(trail, live)
+  if (owner !== undefined) return owner
+  if (trail.tickedFrom === key && isOpenSession(trail.tickedIn, live)) return trail.tickedIn
 
   return heirOf(live, key)?.id
 }

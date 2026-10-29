@@ -28,6 +28,7 @@ const task = (id: string, title: string, extra: Partial<QueueTask> = {}): QueueT
   title,
   brief: `**Goal**: ${title}.`,
   status: 'ready',
+  askedIn: 'S1',
   createdAt: AFTERNOON - 60_000,
   ...extra,
 })
@@ -47,13 +48,16 @@ test('the queue keeps its order: a task moves among the tasks still to do, held 
   const tasks = [task('a', 'First'), task('b', 'Second', { isHeld: true }), task('d', 'Done', { status: 'done' }), task('c', 'Third')]
   expect(moveTask(tasks, 'c', -1).map(one => one.id)).toEqual(['a', 'c', 'd', 'b'])
   expect(moveTask(tasks, 'a', -1).map(one => one.id)).toEqual(['a', 'b', 'd', 'c'])
-  expect(nextTask(moveTask(tasks, 'a', 1))?.id).toBe('a')
-  expect(nextTask([task('b', 'Second', { isHeld: true }), task('c', 'Third')])?.id).toBe('c')
+  expect(nextTask(moveTask(tasks, 'a', 1), 'S1')?.id).toBe('a')
+  expect(nextTask([task('b', 'Second', { isHeld: true }), task('c', 'Third')], 'S1')?.id).toBe('c')
+  // A session only takes the tasks written in it.
+  expect(nextTask([task('a', 'First', { askedIn: 'S2' }), task('c', 'Third')], 'S1')?.id).toBe('c')
+  expect(nextTask([task('a', 'First', { askedIn: 'S2' })], 'S1')).toBeUndefined()
   const ops = parseQueueOps({ add: [{ title: 'Later idea', brief: '**Goal**: x' }], finish: [{ id: 'a', outcome: 'Shipped' }, { id: 'zz', outcome: '' }] })
-  const applied = applyQueueOps(tasks, ops, AFTERNOON, () => 'n1')
+  const applied = applyQueueOps(tasks, ops, AFTERNOON, () => 'n1', 'S1')
   expect(applied.unknown).toEqual(['zz'])
   expect(applied.list.find(one => one.id === 'a')).toMatchObject({ status: 'done', outcome: 'Shipped', doneAt: AFTERNOON })
-  expect(applied.list.at(-1)).toMatchObject({ id: 'n1', status: 'ready', addedBy: 'claude' })
+  expect(applied.list.at(-1)).toMatchObject({ id: 'n1', status: 'ready', addedBy: 'claude', askedIn: 'S1' })
 })
 
 test('a dropped idea that is clear is filed as a ready task with its brief', async ($, on) => {
@@ -139,7 +143,7 @@ test('the person orders the queue, holds a task, and removes one', async ($, on)
   await ui.unmount()
 })
 
-test('once Claude is done, the next ready task starts by itself after a countdown, then the one after', async ($, on) => {
+test('once its session is free, the next ready task starts by itself after a countdown, then the one after', async ($, on) => {
   const w = world(on)
   const clock = mock.clock(on, { now: AFTERNOON })
   w.stored[QUEUE_KEY] = { tasks: [task('h1', 'Held idea', { isHeld: true }), task('a1', 'Export the week'), task('b2', 'Weekly summary')], autopilot: true }
@@ -148,11 +152,13 @@ test('once Claude is done, the next ready task starts by itself after a countdow
   await finishTurn($, 'The login screen works again.')
 
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  // Free only once idle as long as a tick waits before an idle Claude picks it up (30 s).
+  expect(await allText(ui)).not.toContain('▶ Next at')
+  await clock.advance(40_000)
   expect(await allText(ui)).toContain('▶ Next at 15:01:')
   expect(await allText(ui)).toContain('Export the week')
-  await clock.advance(30_000)
   expect(w.prompts).toHaveLength(1)
-  await clock.advance(40_000)
+  await clock.advance(60_000)
   expect(w.prompts).toHaveLength(2)
   expect(w.prompts[1]?.text).toContain("Next task from the person's queue (task a1, « Export the week »)")
   expect(w.prompts[1]?.text).toContain('**Goal**: Export the week.')
@@ -163,13 +169,13 @@ test('once Claude is done, the next ready task starts by itself after a countdow
   await $.prompt.submit({ text: w.prompts[1]?.text ?? '', wait: false, origin: { kind: 'plugin', name: 'overview' } })
   await finishTurn($, 'Parents can now export the week as a PDF.')
   expect(w.queued().find(one => one.id === 'a1')).toMatchObject({ status: 'done', outcome: 'Parents can now export the week as a PDF.' })
-  await clock.advance(70_000)
+  await clock.advance(110_000)
   expect(w.prompts.at(-1)?.text).toContain('(task b2, « Weekly summary »)')
   expect(w.queued().find(one => one.id === 'h1')?.status).toBe('ready')
   await ui.unmount()
 })
 
-test('nothing starts alone while Claude asks a question, after « Not now », with autopilot off, or in a session just opened', async ($, on) => {
+test('nothing starts alone while Claude asks a question, after « Not now », with autopilot off, or in a session just opened', { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on)
   const clock = mock.clock(on, { now: AFTERNOON })
   w.stored[QUEUE_KEY] = { tasks: [task('a1', 'Export the week')], autopilot: true }
@@ -184,6 +190,7 @@ test('nothing starts alone while Claude asks a question, after « Not now », wi
   await $.prompt.submit({ text: 'No, phones only', ...COMPOSER })
   await finishTurn($, 'Done for phones.')
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await clock.advance(40_000)
   await ui.press({ key: 'countdown-snooze' })
   await clock.advance(120_000)
   expect(w.prompts).toHaveLength(1)
@@ -201,17 +208,102 @@ test('nothing starts alone while Claude asks a question, after « Not now », wi
   await ui.unmount()
 })
 
-test('only the project’s last-used session picks the next task', async ($, on) => {
+/** Another open session of the project, its card just published (a card older than 90 s is a closed session). */
+const otherSession = (w: ReturnType<typeof world>, id: string, now: number, extra: Record<string, unknown> = {}) => {
+  w.stored[`session:${id}`] = { id, project: 'myapp', key: 'yourSteps:/work/myapp', summary: 'Release', done: 0, total: 0, state: 'idle', updatedAt: now, ...extra }
+}
+
+test('an idea written in this session runs here once free, even after the person moved to another session', { timeoutMs: 20_000 }, async ($, on) => {
+  const w = world(on)
+  const clock = mock.clock(on, { now: AFTERNOON })
+  w.replies.push(CLEAR)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await ui.input({ key: 'idea-input', text: 'parents should be able to export the week as pdf' })
+  const [idea] = w.queued()
+  expect(idea).toMatchObject({ status: 'ready', askedIn: 'S1' })
+  await ui.unmount()
+
+  // The person now types in session S2: it is the project's last used, but the idea stays S1's.
+  otherSession(w, 'S2', AFTERNOON, { activeAt: AFTERNOON + 1_000 })
+  await $.prompt.submit({ text: 'Fix the login screen', ...COMPOSER })
+  await finishTurn($, 'Fixed.')
+  await clock.advance(50_000)
+  otherSession(w, 'S2', AFTERNOON + 50_000, { activeAt: AFTERNOON + 1_000 })
+  await clock.advance(60_000)
+  expect(w.prompts.at(-1)?.text).toContain(`(task ${idea?.id}, « Export the week as a PDF »)`)
+  expect(w.queued()[0]).toMatchObject({ status: 'running', startedIn: 'S1', askedIn: 'S1' })
+})
+
+test("another session never runs an idea that is not its own, and says where it will run", { timeoutMs: 20_000 }, async ($, on) => {
+  const w = world(on)
+  const clock = mock.clock(on, { now: AFTERNOON })
+  w.me.id = 'S2'
+  w.stored[QUEUE_KEY] = { tasks: [task('a1', 'Export the week', { askedIn: 'S1' })], autopilot: true }
+  otherSession(w, 'S1', AFTERNOON, { summary: 'Agenda polish' })
+  await $.prompt.submit({ text: 'Fix the login screen', ...COMPOSER })
+  await finishTurn($, 'Fixed.')
+  for (let at = 1; at <= 3; at += 1) {
+    await clock.advance(50_000)
+    otherSession(w, 'S1', AFTERNOON + at * 50_000, { summary: 'Agenda polish' })
+  }
+  expect(w.prompts).toHaveLength(1)
+  expect(w.queued()[0]?.status).toBe('ready')
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await allText(ui)).toContain('Runs in Claude in « Agenda polish »')
+  expect(await ui.find({ key: 'task-here:a1' })).toBeUndefined()
+  expect(w.toasts.some(line => line.includes('Its session is closed'))).toBe(false)
+  await ui.unmount()
+})
+
+test('an idea is never launched while its session works, or right after it finished', { timeoutMs: 20_000 }, async ($, on) => {
   const w = world(on)
   const clock = mock.clock(on, { now: AFTERNOON })
   w.stored[QUEUE_KEY] = { tasks: [task('a1', 'Export the week')], autopilot: true }
-  w.stored['session:S2'] = { id: 'S2', project: 'myapp', key: 'yourSteps:/work/myapp', summary: 'Release', done: 0, total: 0, state: 'idle', updatedAt: AFTERNOON, activeAt: AFTERNOON + 1 }
   await $.prompt.submit({ text: 'Fix the login screen', ...COMPOSER })
   await finishTurn($, 'Fixed.')
+  // Working again: a long turn never lets the idea in.
+  await $.prompt.submit({ text: 'Now the signup screen', ...COMPOSER })
+  await clock.advance(200_000)
+  expect(w.prompts).toHaveLength(2)
+  // Finished a moment ago: not free yet.
+  await finishTurn($, 'Done.')
   await clock.advance(20_000)
-  w.stored['session:S2'] = { ...(w.stored['session:S2'] as object), updatedAt: AFTERNOON + 20_000 }
-  await clock.advance(70_000)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await allText(ui)).not.toContain('▶ Next at')
+  expect(w.prompts).toHaveLength(2)
+  await ui.unmount()
+})
+
+test('an idea whose session is gone is never launched alone: the person chooses where it runs, or dismisses it', { timeoutMs: 20_000 }, async ($, on) => {
+  const w = world(on)
+  const clock = mock.clock(on, { now: AFTERNOON })
+  w.stored[QUEUE_KEY] = {
+    tasks: [task('a1', 'Export the week', { askedIn: 'S9' }), task('b2', 'Weekly summary', { askedIn: 'S9' }), task('c3', 'Dark agenda', { askedIn: undefined })],
+    autopilot: true,
+  }
+  otherSession(w, 'S2', AFTERNOON, { summary: 'Agenda polish' })
+  await $.prompt.submit({ text: 'Fix the login screen', ...COMPOSER })
+  await finishTurn($, 'Fixed.')
+  await clock.advance(50_000)
+  otherSession(w, 'S2', AFTERNOON + 50_000, { summary: 'Agenda polish' })
+  await clock.advance(60_000)
+  otherSession(w, 'S2', AFTERNOON + 110_000, { summary: 'Agenda polish' })
   expect(w.prompts).toHaveLength(1)
+  expect(w.queued().map(one => one.status)).toEqual(['ready', 'ready', 'ready'])
+  expect(w.toasts.filter(line => line.startsWith('Its session is closed'))).toHaveLength(3)
+
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await allText(ui)).toContain('The session it was written in is closed. Where should it run?')
+  expect(await ui.find({ key: 'task-start:a1' })).toBeUndefined()
+  expect(await ui.find({ key: 'task-send:a1:S2' })).toMatchObject({ text: '→ Claude in « Agenda polish »' })
+  await ui.press({ key: 'task-send:a1:S2' })
+  expect(w.queued().find(one => one.id === 'a1')?.askedIn).toBe('S2')
+  await ui.press({ key: 'task-dismiss:b2' })
+  expect(w.queued().find(one => one.id === 'b2')?.removedAt).toBeDefined()
+  await ui.press({ key: 'task-here:c3' })
+  expect(w.prompts.at(-1)?.text).toContain('(task c3, « Dark agenda »)')
+  expect(w.queued().find(one => one.id === 'c3')).toMatchObject({ status: 'running', askedIn: 'S1' })
+  await ui.unmount()
 })
 
 test('Claude adds to the queue when asked, and marks a started task finished', async ($, on) => {

@@ -185,6 +185,8 @@ export type QueueTask = {
   error?: string
   /** Who added it: the person in the pane, or Claude through its tool. */
   addedBy?: 'person' | 'claude'
+  /** The session it was written in: it runs there alone, and nowhere else without the person's say. */
+  askedIn?: string
   createdAt: number
   startedAt?: number
   /** The session that runs it. */
