@@ -1,11 +1,13 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren, RenderComponent, RenderSurface, Timer } from 'claude-code'
 
-import type { Board, Change, CrewMember, Goal, Helper, InboxNote, ItemKind, ItemNote, LastArchive, Milestone, OtherProject, Part, Queue, QueueTask, SessionCard, StepFilter, YourStep } from '../types'
+import type { Board, Change, CrewMember, Recap, RecapEvent, Goal, Helper, InboxNote, ItemKind, ItemNote, LastArchive, Milestone, OtherProject, Part, Queue, QueueTask, SessionCard, StepFilter, YourStep } from '../types'
 import { INBOX_PREFIX, hearerOf, heirOf, inboxKey, pickupLine, sessionName } from './routing'
 import type { LiveSession } from './routing'
 import { noteLine, noteMessage, noteText, putNote, setNoteStatus, settleNotes } from './notes'
-import { drawHelper, drawHero, drawIcon, drawSession, drawSpinner } from './draw'
+import { coatOf, drawHelper, drawHero, drawIcon, drawSession, drawSpinner, drawWelcome } from './draw'
+import { COMMITS_READ, LAST_SEEN_KEY, LOG_PREFIX, WATCHED_PREFIX, addEvents, agoText, captionOf, chipsOf, notificationOf, parseCommits, readLog, recapOf, sinceWhen } from './recap'
+import type { ProjectActivity } from './recap'
 import type { IconKind, Ink, Mood } from './draw'
 import {
   EMPTY_QUEUE,
@@ -163,6 +165,8 @@ const isSnoozed = atom({ plugin: 'overview', key: 'isSnoozed' } as const, false)
 const isAsking = atom({ plugin: 'overview', key: 'isAsking' } as const, false)
 const openTasks = atom({ plugin: 'overview', key: 'openTasks' } as const, [])
 const ideaDraft = atom({ plugin: 'overview', key: 'ideaDraft' } as const, '')
+const recap = atom({ plugin: 'overview', key: 'recap' } as const, null)
+const recapCheckedIn = atom({ plugin: 'overview', key: 'recapCheckedIn' } as const, '')
 
 /** The pane's sections and whether each is open until the person folds or unfolds it. */
 const SECTION_DEFAULTS: Record<string, boolean> = { crew: true, move: true, queue: true, goals: false, recent: false, map: false, elsewhere: false }
@@ -218,6 +222,10 @@ let idleSince = 0
 const toldOrphans = new Set<string>()
 /** Tool calls each helper made, counted as they run and shown at the next look. */
 const crewSteps = new Map<string, number>()
+/** Files changed in this turn, by Claude or its helpers: logged at the turn's end for the recap. */
+const editedPaths = new Set<string>()
+/** Tools that change a file, and where their input names it. */
+const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit'])
 
 /** Shows or hides the steps (flips them without a value) and remembers it across sessions. */
 const setSteps = async ($: EngineInterface, value?: boolean) => {
@@ -542,6 +550,8 @@ const refreshHelpers = async ($: EngineInterface) => {
     if (seen.has(old.id)) continue
     members.push(old.status === 'running' ? { ...old, status: 'done', endedAt: now, steps: crewSteps.get(old.id) ?? old.steps } : old)
   }
+  const ended = members.filter(one => one.status !== 'running' && before.some(old => old.id === one.id && old.status === 'running'))
+  await logEvents($, ended.map(one => ({ at: now, kind: 'helper', title: one.description, ...(one.status === 'failed' ? { isFailed: true } : {}) })))
   const kept = members.filter(one => one.endedAt === undefined || now - one.endedAt < CREW_KEPT_MS)
   for (const id of crewSteps.keys()) if (!kept.some(one => one.id === id)) crewSteps.delete(id)
   if (!same(before, kept)) await update($, crew, () => kept)
@@ -837,6 +847,200 @@ const toggleTaskOpen = async ($: EngineInterface, id: string) => {
   await update($, openTasks, open => ((open ?? []).includes(id) ? (open ?? []).filter(one => one !== id) : [...(open ?? []), id]))
 }
 
+/** Adds events to this project's activity log, for the recap. */
+const logEvents = async ($: EngineInterface, added: RecapEvent[]) => {
+  if (added.length === 0) return
+  const key = `${LOG_PREFIX}${rootOf(await projectKey($))}`
+  const session = await $.session.id()
+  await $.store.set(key, addEvents(readLog(await $.store.get(key)), added.map(one => ({ ...one, session })), await $.clock.now()))
+}
+
+/** Logs the files changed in this turn as one event. */
+const logEdits = async ($: EngineInterface) => {
+  if (editedPaths.size === 0) return
+  const paths = [...editedPaths].slice(0, 100)
+  editedPaths.clear()
+  await logEvents($, [{ at: await $.clock.now(), kind: 'edit', paths }])
+}
+
+/** Every project the mod knows of, by root: those with steps, a feed, a map, a queue or a log. */
+const knownRoots = async ($: EngineInterface) => {
+  const prefixes = [STORE_PREFIX, CHANGES_PREFIX, MAP_PREFIX, QUEUE_PREFIX, LOG_PREFIX]
+  const roots = new Set([rootOf(await projectKey($))])
+  for (const key of await $.store.keys()) {
+    const prefix = prefixes.find(one => key.startsWith(one))
+    if (prefix !== undefined) roots.add(key.slice(prefix.length))
+  }
+
+  return [...roots].filter(root => root.startsWith('/'))
+}
+
+/** A repository's commits since a time, on every branch (worktrees' too); none where git cannot read it. */
+const commitsOf = async ($: EngineInterface, root: string, since: number) => {
+  try {
+    const ran = await $.process.run(
+      ['git', '-C', root, 'log', '--all', '--no-merges', `--since=${new Date(since).toISOString()}`, '--format=%ct%x09%s', '-n', String(COMMITS_READ)],
+      { timeoutMs: 8000 },
+    )
+
+    return ran.exitCode === 0 ? parseCommits(ran.stdout) : []
+  } catch (error) {
+    $.ui.log(`overview: no commits read in ${root}: ${String(error)}`, { to: 'debug' })
+
+    return []
+  }
+}
+
+/** Moves the person's last visit forward (never back: a parallel session may have moved it further). */
+const markSeen = async ($: EngineInterface, at: number) => {
+  if (at > (sinceWhen(await $.store.get(LAST_SEEN_KEY)) ?? 0)) await $.store.set(LAST_SEEN_KEY, at)
+}
+
+/**
+ * Looks, once per session, for what happened since the person's last visit. The first run only
+ * records the time; with nothing new it moves the time on; else the recap waits for a surface to
+ * draw it (the terminal at once, the desktop or phone app when it attaches), and the last visit
+ * moves only then: a run nobody watches keeps it for the person.
+ */
+const checkRecap = async ($: EngineInterface) => {
+  const me = await $.session.id()
+  if ((await read($, recapCheckedIn)) === me) return
+  await update($, recapCheckedIn, () => me)
+  await update($, recap, () => null)
+  const now = await $.clock.now()
+  const since = sinceWhen(await $.store.get(LAST_SEEN_KEY))
+  if (since === undefined || since >= now) {
+    await $.store.set(LAST_SEEN_KEY, now)
+
+    return
+  }
+  const own = await projectKey($)
+  const projects = await Promise.all(
+    (await knownRoots($)).map(async (root): Promise<ProjectActivity> => {
+      const stored = readStored(await $.store.get(`${STORE_PREFIX}${root}`))
+      const watched = await $.store.get(`${WATCHED_PREFIX}${root}`)
+
+      return {
+        root,
+        label: `${STORE_PREFIX}${root}` === own ? await read($, projectLabel) : (stored.label ?? labelFor(root, null)),
+        feed: readChanges(await $.store.get(`${CHANGES_PREFIX}${root}`)),
+        log: readLog(await $.store.get(`${LOG_PREFIX}${root}`)),
+        commits: await commitsOf($, root, since),
+        ...(typeof watched === 'number' ? { watchedAt: watched } : {}),
+      }
+    }),
+  )
+  const lines = recapOf(projects, since)
+  if (lines.length === 0) {
+    await markSeen($, now)
+
+    return
+  }
+  await update($, recap, () => ({ since, at: now, lines, isSeen: false, isHidden: false }))
+}
+
+/**
+ * A surface draws the recap (the band, the pane): the last visit moves to this session's start, so it is never shown
+ * twice, and the person's own notifications carry it too: the OS notification of the terminal,
+ * else the app's (desktop, phone), else the band and the pane alone.
+ */
+const deliverRecap = async ($: EngineInterface) => {
+  const shown = await read($, recap)
+  if (shown === null || shown.isSeen) return
+  await update($, recap, current => (current === null ? null : { ...current, isSeen: true }))
+  await markSeen($, shown.at)
+  const { title, text } = notificationOf(shown)
+  try {
+    if ((await $.ui.notify(text, { title })).isSent) return
+  } catch (error) {
+    $.ui.log(`overview: recap notification not sent: ${String(error)}`, { to: 'debug' })
+  }
+  await notifyPhone($, `${title}\n${text}`)
+}
+
+const hideRecap = async ($: EngineInterface) => {
+  await update($, recap, current => (current === null ? null : { ...current, isHidden: true }))
+}
+
+/** Projects drawn in the band and the pane; the rest are counted. */
+const RECAP_LINES = 6
+
+/**
+ * « What did you miss », as the band and the pane draw it: Claude's welcome with the totals and
+ * each project's share (a drawing where the surface has them, a heading on the terminal), then
+ * one short line per project, newest first, its dot in the colour of its share.
+ */
+const recapView = ($: EngineInterface, e: { surface: RenderSurface; component: RenderComponent }, shown: Recap, now: number, columns: number, where: 'band' | 'pane') => {
+  const table = $.ui.resolve(e)
+  const { Box, Button, Text } = table
+  const Svg = e.surface !== 'terminal' && 'Svg' in table ? table.Svg : undefined
+  const caption = captionOf(shown)
+  const sum = (pick: (line: Recap['lines'][number]) => number) => shown.lines.reduce((total, line) => total + pick(line), 0)
+  const tiles = (
+    [
+      { kind: 'stuck', count: sum(line => line.stuck) },
+      { kind: 'goals', count: sum(line => line.goals) },
+      { kind: 'commits', count: sum(line => line.commits) },
+      { kind: 'done', count: sum(line => line.done) },
+      { kind: 'helpers', count: sum(line => line.helpers) },
+      { kind: 'files', count: sum(line => line.files) },
+      { kind: 'updates', count: sum(line => line.updates) },
+    ] as const
+  ).filter(tile => tile.count > 0)
+  const weightOf = (line: Recap['lines'][number]) => line.commits + line.goals + line.done + line.stuck + line.helpers + line.files + line.updates
+  const width = Math.round(Math.min(760, Math.max(300, columns * 7.8)))
+  const lines = shown.lines.slice(0, RECAP_LINES)
+  const more = shown.lines.length - lines.length
+
+  return (
+    <Box key={`recap:${where}`} flexDirection="column">
+      {Svg !== undefined ? (
+        <Svg
+          key={`recap-art:${where}`}
+          source={drawWelcome({ width, caption, tiles, shares: shown.lines.map(line => ({ label: line.label, weight: weightOf(line) })) })}
+          alt={`Welcome back · ${caption}`}
+          width={width}
+          height={92}
+          isInteractive
+        />
+      ) : (
+        <Text key={`recap-title:${where}`} color="claude" bold wrap="truncate-end">
+          ✦ WELCOME BACK · {caption}
+        </Text>
+      )}
+      {lines.map(line => {
+        const chips = chipsOf(line)
+
+        return (
+          <Box key={`recap-line:${where}:${line.root}`} flexDirection="row" justifyContent="space-between">
+            <Box key={`recap-words:${where}:${line.root}`} flexShrink={1} flexGrow={1}>
+              <Text wrap="truncate-end">
+                <Text color={coatOf(line.label)}>● </Text>
+                <Text bold>{line.label}</Text>
+                {chips.map(chip => (
+                  <Text key={`chip:${chip.kind}`} color={chip.kind === 'stuck' ? 'warning' : undefined}>
+                    {' · '}
+                    {chip.text}
+                  </Text>
+                ))}
+                {line.headline !== '' && <Text dimColor> — {line.headline}</Text>}
+              </Text>
+            </Box>
+            <Text key={`recap-ago:${where}:${line.root}`} dimColor>
+              {' '}
+              {agoText(line.at, now)}
+            </Text>
+          </Box>
+        )
+      })}
+      <Box key={`recap-foot:${where}`} flexDirection="row" justifyContent="space-between">
+        <Text dimColor>{more > 0 ? `+ ${more} more project${more === 1 ? '' : 's'}` : ' '}</Text>
+        <Button key={`recap-hide:${where}`} plain dimColor label="Got it ✓" onPress={() => hideRecap($)} />
+      </Box>
+    </Box>
+  )
+}
+
 /** Tells the person's phone, through the app's own notifications (sent only when they are away). */
 const notifyPhone = async ($: EngineInterface, message: string) => {
   if (!phoneAlerts || message === '') return
@@ -1081,10 +1285,29 @@ export const register: Register = (on, options) => {
     await loadOtherProjects($)
     await loadMap($)
     await loadQueue($)
+    try {
+      await checkRecap($)
+      // A surface draws the band and the pane now (the terminal); the apps attach later.
+      if (e.surface !== null) await deliverRecap($)
+    } catch (error) {
+      $.ui.log(`overview: no recap: ${String(error)}`, { to: 'debug' })
+    }
     ensureSweep($)
     void $.ui.open({ id: PANE, title: TITLE })
 
     return next(e)
+  })
+
+  // The desktop or the phone app joined: the recap waiting is drawn there now.
+  on('session.attach', async ($, e, next) => {
+    const attached = await next(e)
+    try {
+      await deliverRecap($)
+    } catch (error) {
+      $.ui.log(`overview: recap not delivered: ${String(error)}`, { to: 'debug' })
+    }
+
+    return attached
   })
 
   on('command.run', { command: 'idea' }, async ($, e) => {
@@ -1186,6 +1409,11 @@ export const register: Register = (on, options) => {
     }
     if (e.agentId !== undefined) crewSteps.set(e.agentId, (crewSteps.get(e.agentId) ?? 0) + 1)
     const ran = await next(e)
+    if (ran.deny === undefined && ran.isError !== true && EDIT_TOOLS.has(String(e.tool))) {
+      const input = e as unknown as { file_path?: unknown; notebook_path?: unknown }
+      const path = input.file_path ?? input.notebook_path
+      if (typeof path === 'string' && path !== '') editedPaths.add(path)
+    }
     if (e.agentId !== undefined || ran.deny !== undefined) return ran
     try {
       await recordAction($, String(e.tool), e, ran.isError === true)
@@ -1218,7 +1446,13 @@ export const register: Register = (on, options) => {
     }
     const summary = typeof args.summary === 'string' ? args.summary.trim() : ''
     const now = await $.clock.now()
+    const prior = await read($, board)
     const merged = await update($, board, prev => merge(prev ?? EMPTY, goals, summary, now))
+    const wasDone = (title: string) => [...prior.goals, ...prior.earlier].some(one => one.status === 'done' && one.title.toLowerCase() === title.toLowerCase())
+    await logEvents($, [
+      ...(summary !== '' && summary !== prior.summary ? [{ at: now, kind: 'work' as const, title: summary }] : []),
+      ...goals.filter(goal => goal.status === 'done' && !wasDone(goal.title)).map(goal => ({ at: now, kind: 'goal' as const, title: goal.title })),
+    ])
     await settle($, note => note.kind === 'goal')
     const firstActive = goals.find(goal => goal.status === 'active')?.title
     await update($, activity, log => {
@@ -1307,6 +1541,8 @@ export const register: Register = (on, options) => {
       await update($, board, prev => archive(prev ?? EMPTY))
       const typed = await $.clock.now()
       await update($, activeAt, () => typed)
+      // What the person watches here is no news at their next return.
+      await $.store.set(`${WATCHED_PREFIX}${rootOf(await projectKey($))}`, typed)
       await update($, isSnoozed, () => false)
       await update($, isAsking, () => false)
       await update($, autoStartAt, () => 0)
@@ -1340,6 +1576,7 @@ export const register: Register = (on, options) => {
       const queued = (await read($, notes)).filter(note => note.status === 'queued')
       if (queued.length > 0) await deliverNotes($, queued.map(note => note.item))
       try {
+        await logEdits($)
         idleSince = await $.clock.now()
         const lastLine = e.answer.trim().split('\n').filter(line => line.trim() !== '').pop() ?? ''
         await update($, isAsking, () => /[?？]\s*\**\s*$/.test(lastLine))
@@ -1358,6 +1595,7 @@ export const register: Register = (on, options) => {
   on('session.end', async ($, e, next) => {
     await $.store.delete(`${SESSION_PREFIX}${e.sessionId}`)
     try {
+      await logEdits($)
       const running = pendingTasks((await loadQueue($)).tasks).filter(task => task.status === 'running' && task.startedIn === e.sessionId)
       for (const task of running) await changeQueued($, task.id, one => ({ ...one, status: 'failed', error: 'Its session closed before it was finished' }))
     } catch (error) {
@@ -1495,6 +1733,23 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // The band above the prompt greets the person back until they first type or close it; what is beneath it stays drawn.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const shown = await read($, recap)
+    if (e.props.hasSurvey || shown === null || shown.isHidden || (await read($, activeAt)) > shown.at) return next(e)
+    const beneath = await next(e)
+    const { Box } = $.ui.resolve(e)
+
+    return (
+      <Box key="recap-band" flexDirection="column" width={e.props.bodyColumns}>
+        <Box key="recap-card" flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1}>
+          {recapView($, e, shown, await $.clock.now(), e.props.bodyColumns - 4, 'band')}
+        </Box>
+        {beneath}
+      </Box>
+    )
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const table = $.ui.resolve(e)
     const { Box, Button, Link, Markdown, Text } = table
@@ -1530,6 +1785,7 @@ export const register: Register = (on, options) => {
     const startsAt = await read($, autoStartAt)
     const openBriefs = await read($, openTasks)
     const draft = await read($, ideaDraft)
+    const missed = await read($, recap)
     // Drawings go where a surface draws them; the terminal keeps to text and glyphs.
     const Svg = e.surface !== 'terminal' && 'Svg' in table ? table.Svg : undefined
     const isOpenSection = (part: string) => folds[part] ?? SECTION_DEFAULTS[part] ?? false
@@ -2699,6 +2955,11 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column">
         {head}
+        {missed !== null && !missed.isHidden && (
+          <Box key="recap-pane" flexDirection="column" marginTop={1} borderStyle="round" borderColor="claude" paddingX={1}>
+            {recapView($, e, missed, clock, inner, 'pane')}
+          </Box>
+        )}
         {countdown}
         {crewPart}
         {movePart}

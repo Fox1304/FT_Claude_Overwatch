@@ -307,3 +307,76 @@ export const drawIcon = (kind: IconKind, ink: Ink) =>
     () =>
       `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 18 18"><g transform="scale(.75)" fill="none" stroke="${ICON_INK[ink]}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">${ICON_PATHS[kind]}</g></svg>`,
   )
+
+export type WelcomeInput = {
+  /** CSS pixels the drawing may take. */
+  width: number
+  /** "3 projects moved in 14 h". */
+  caption: string
+  /** The totals worth a tile, the most telling first (four at most are drawn). */
+  tiles: readonly { kind: 'commits' | 'goals' | 'done' | 'helpers' | 'files' | 'updates' | 'stuck'; count: number }[]
+  /** Each project's share of what happened, in the recap's order, coloured as its line is. */
+  shares: readonly { label: string; weight: number }[]
+}
+
+const TILE: Record<WelcomeInput['tiles'][number]['kind'], { word: string; fill: string; glyph: string }> = {
+  goals: { word: 'goals', fill: 'var(--ok)', glyph: '<path d="M-4 0l3 3 5-6" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>' },
+  commits: { word: 'commits', fill: 'var(--claude)', glyph: '<circle r="2.6" fill="none" stroke="#fff" stroke-width="2"/><path d="M-7 0h4.4M2.6 0H7" stroke="#fff" stroke-width="2" stroke-linecap="round"/>' },
+  done: { word: 'done', fill: 'var(--ok)', glyph: '<path d="M-4.5 0.5l2.6 2.6 6.4-6.4" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>' },
+  helpers: { word: 'helpers', fill: 'var(--blue)', glyph: '<circle cx="-2.3" cy="-0.6" r="1.4" fill="#fff"/><circle cx="2.3" cy="-0.6" r="1.4" fill="#fff"/><path d="M-2.4 2.8q2.4 1.8 4.8 0" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>' },
+  files: { word: 'files', fill: 'var(--plan)', glyph: '<path d="M-4 4l1-3.6 5.6-5.6 2.6 2.6L-0.4 3z" fill="#fff"/>' },
+  updates: { word: 'updates', fill: 'var(--mute)', glyph: '<path d="M-4 1.5a4.5 4.5 0 0 0 8.4-1M4 -1.5a4.5 4.5 0 0 0-8.4 1" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>' },
+  stuck: { word: 'stuck', fill: 'var(--warn)', glyph: '<rect x="-1.1" y="-5" width="2.2" height="6" rx="1.1" fill="#fff"/><circle cy="3.6" r="1.3" fill="#fff"/>' },
+}
+
+/**
+ * « What did you miss »: Claude waving the person back in, the totals as tiles, and a strip
+ * where each project that moved takes its share, in the colour its line carries.
+ */
+export const drawWelcome = (input: WelcomeInput) => remember(`welcome:${JSON.stringify(input)}`, () => welcomeOf(input))
+
+const welcomeOf = ({ width, caption, tiles, shares }: WelcomeInput) => {
+  const height = 92
+  const shown = tiles.slice(0, Math.max(1, Math.min(4, Math.floor((width - 250) / 78))))
+  const tileWidth = 72
+  const tilesLeft = width - shown.length * (tileWidth + 6)
+  const tileMarks = shown
+    .map((tile, index) => {
+      const look = TILE[tile.kind]
+      const x = tilesLeft + index * (tileWidth + 6)
+
+      return `<g class="pop" style="animation-delay:${0.08 * index}s"><rect x="${x}" y="10" width="${tileWidth}" height="50" rx="12" fill="var(--chip)"/>
+<g transform="translate(${x + 17} 25)"><circle r="9.5" fill="${look.fill}"/>${look.glyph}</g>
+<text x="${x + 31}" y="31" font-size="18" font-weight="800" fill="var(--ink)" ${FONT}>${tile.count > 999 ? '999+' : tile.count}</text>
+<text x="${x + 10}" y="51" font-size="10.5" font-weight="700" fill="var(--mute)" ${FONT}>${look.word}</text></g>`
+    })
+    .join('')
+  const total = shares.reduce((sum, one) => sum + Math.max(1, one.weight), 0)
+  const stripLeft = 8
+  const stripWidth = width - 16
+  let at = stripLeft
+  const strip = shares
+    .map((share, index) => {
+      const span = (Math.max(1, share.weight) / total) * stripWidth
+      const piece = `<rect class="grow" style="animation-delay:${0.1 * index}s" x="${at.toFixed(1)}" y="74" width="${Math.max(2, span - 3).toFixed(1)}" height="9" rx="4.5" fill="${coatOf(share.label)}"/>`
+      at += span
+
+      return piece
+    })
+    .join('')
+  const words = wrapWords(caption, Math.max(14, Math.floor((tilesLeft - 96) / 6.6)), 2)
+
+  return svg(
+    width,
+    height,
+    `<style>.pop{animation:pop .5s ease-out both}.grow{transform-box:fill-box;transform-origin:left;animation:grow .7s ease-out both}.wave{transform-box:fill-box;transform-origin:20% 90%;animation:wave 1.2s ease-in-out 3}
+@keyframes pop{from{opacity:0;transform:translateY(6px)}}@keyframes grow{from{transform:scaleX(0)}}@keyframes wave{50%{transform:rotate(-24deg)}}
+@media (prefers-reduced-motion: reduce){*{animation:none!important}}</style>
+<g transform="translate(-2 -6) scale(.92)">${claudeAvatar('done')}<g class="wave"><ellipse cx="68" cy="40" rx="5" ry="6.5" fill="var(--claude)"/><path d="M63 46l-4 6" stroke="var(--claude)" stroke-width="4" stroke-linecap="round"/></g></g>
+<text x="84" y="30" font-size="17" font-weight="800" fill="var(--ink)" ${FONT}>Welcome back</text>
+${words.map((line, index) => `<text x="84" y="${49 + index * 15}" font-size="12" font-weight="600" fill="var(--mute)" ${FONT}>${escape(line)}</text>`).join('')}
+${tileMarks}
+<rect x="${stripLeft}" y="74" width="${stripWidth}" height="9" rx="4.5" fill="var(--track)"/>${strip}`,
+    `${caption}`,
+  )
+}

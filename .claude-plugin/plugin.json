@@ -1,6 +1,6 @@
 {
   "name": "overview",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "A small dashboard beside the chat: Claude's progress and helpers drawn as avatars, the steps only you can take, and a queue of ideas Claude clarifies, files and works through alone",
   "author": {
     "name": "Fox1304",

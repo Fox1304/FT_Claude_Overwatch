@@ -142,6 +142,39 @@ export type InboxNote = { note: ItemNote; key: string; target: string }
 export type StepLink = { label: string; url: string }
 
 /** Another project's open steps, shown and tickable from any project's pane. */
+/** Something the recap counts that no other record keeps: a goal reached, a helper finished, a task taken on, files changed. */
+export type RecapEvent = {
+  at: number
+  kind: 'goal' | 'helper' | 'work' | 'edit'
+  /** The goal, the helper's task, or the session's aim. */
+  title?: string
+  /** For a helper: it ended failed. */
+  isFailed?: boolean
+  /** For edits: the files changed in one turn, by path. */
+  paths?: string[]
+  /** The session it happened in. */
+  session?: string
+}
+
+/** One project in « What did you miss »: when it last moved, its counts, and its headline. */
+export type RecapLine = {
+  root: string
+  label: string
+  at: number
+  commits: number
+  goals: number
+  done: number
+  stuck: number
+  helpers: number
+  failed: number
+  files: number
+  updates: number
+  headline: string
+}
+
+/** The recap shown at this session's start: since when, its lines, and whether the person saw it. */
+export type Recap = { since: number; at: number; lines: RecapLine[]; isSeen: boolean; isHidden: boolean }
+
 export type OtherProject = { key: string; label: string; steps: YourStep[] }
 
 /** A subagent working in the background. */
@@ -287,6 +320,10 @@ declare module 'claude-code' {
       openTasks: string[]
       /** What the person is typing in the idea box, emptied once the idea is dropped. */
       ideaDraft: string
+      /** « What did you miss », made once at this session's start (null: nothing to show). */
+      recap: Recap | null
+      /** The session that looked for a recap: a reload of the same session never makes a second one. */
+      recapCheckedIn: string
     }
   }
 }

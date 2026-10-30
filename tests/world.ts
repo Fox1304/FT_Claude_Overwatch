@@ -51,6 +51,11 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
   /** What Claude answers when the mod reads an idea, one reply per call; and what it was asked. */
   const replies: string[] = []
   const reads: { model: string; prompt: string }[] = []
+  /** Each repository's `git log` lines (`<seconds>\t<subject>`), by root; a root left out is no repository. */
+  const git: Record<string, string> = {}
+  /** OS notifications raised, and whether the terminal has a channel for them. */
+  const notified: { title?: string; text: string }[] = []
+  const os = { canNotify: true }
   on('store.get', ($, e) => ({ value: stored[e.key] }))
   on('store.set', ($, e) => {
     stored[e.key] = e.value
@@ -96,6 +101,18 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
 
     return { text: e.text }
   })
+  on('process.run', ($, e) => {
+    const root = e.argv[0] === 'git' && e.argv[1] === '-C' ? String(e.argv[2]) : ''
+    const stdout = git[root]
+
+    return { value: { exitCode: stdout === undefined ? 128 : 0, stdout: stdout ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('ui.notify', ($, e) => {
+    if (!os.canNotify) return { value: { isSent: false, reason: 'no-surface' } }
+    notified.push({ title: e.title, text: e.text })
+
+    return { value: { isSent: true, channel: 'iterm2' } }
+  })
   on('tool.call', { tool: 'mcp__fake__build' }, () => ({ result: 'built' }))
   on('tool.call', { tool: 'PushNotification' }, ($, e) => {
     phone.push(e.message)
@@ -111,5 +128,5 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
 
   const queued = () => ((stored['queue:/work/myapp'] as { tasks?: QueueTask[] } | undefined)?.tasks ?? []) as QueueTask[]
 
-  return { stored, prompts, phone, toasts, logs, agents, me, replies, reads, queued, steps: () => stepsAt(KEY), stepsAt }
+  return { stored, prompts, phone, toasts, logs, agents, me, replies, reads, git, notified, os, queued, steps: () => stepsAt(KEY), stepsAt }
 }
