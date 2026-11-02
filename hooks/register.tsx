@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderChildren, RenderComponent, RenderSurface, Timer } from 'claude-code'
 
-import type { Board, Change, CrewMember, Recap, RecapEvent, Goal, Helper, InboxNote, ItemKind, ItemNote, LastArchive, Milestone, OtherProject, Part, Queue, QueueTask, SessionCard, StepFilter, YourStep } from '../types'
+import type { Board, Change, CrewMember, Recap, RecapEvent, Goal, Helper, InboxNote, ItemKind, ItemNote, LastArchive, Milestone, OtherProject, Part, Queue, QueueTask, SessionCard, StepFilter, TownGate, TownStep, TownView, YourStep } from '../types'
 import { INBOX_PREFIX, hearerOf, heirOf, inboxKey, pickupLine, sessionName } from './routing'
 import type { LiveSession } from './routing'
 import { noteLine, noteMessage, noteText, putNote, setNoteStatus, settleNotes } from './notes'
@@ -123,6 +123,7 @@ import {
   filterSteps,
   restoreIn,
 } from './your-steps'
+import { NO_TOWN, askedLine, headLine, heldDrafts, isShown, lookAtTown, openTown, pickAnswer, plainDate, sendAnswer, settleAnswer } from './town'
 
 const PANE = 'overview'
 const TITLE = 'Overview'
@@ -167,9 +168,10 @@ const openTasks = atom({ plugin: 'overview', key: 'openTasks' } as const, [])
 const ideaDraft = atom({ plugin: 'overview', key: 'ideaDraft' } as const, '')
 const recap = atom({ plugin: 'overview', key: 'recap' } as const, null)
 const recapCheckedIn = atom({ plugin: 'overview', key: 'recapCheckedIn' } as const, '')
+const town = atom({ plugin: 'overview', key: 'town' } as const, NO_TOWN)
 
 /** The pane's sections and whether each is open until the person folds or unfolds it. */
-const SECTION_DEFAULTS: Record<string, boolean> = { crew: true, move: true, queue: true, goals: false, recent: false, map: false, elsewhere: false }
+const SECTION_DEFAULTS: Record<string, boolean> = { crew: true, move: true, town: true, queue: true, goals: false, recent: false, map: false, elsewhere: false }
 const SECTIONS_KEY = 'sections'
 /** The model that reads a dropped idea and writes its brief. */
 const READ_MODEL = 'sonnet'
@@ -1056,7 +1058,85 @@ const notifyPhone = async ($: EngineInterface, message: string) => {
  * session picks up in a turn of its own, once the person has stopped ticking for `pickupMs`
  * (never when it is 0). While Claude works, its next tool result carries them instead.
  */
+// ── The local town: in memory only, never in the store (see town.ts) ──────────────────────
+const townToasts = ($: EngineInterface, toasts: readonly string[]) => {
+  for (const text of toasts) $.ui.toast(text, { timeoutMs: 6000 })
+}
+
+/** One sweep's look at the local town, if one runs; silent when none does. */
+const refreshTown = async ($: EngineInterface) => {
+  try {
+    const before = await read($, town)
+    const looked = await lookAtTown($, before, await $.clock.now())
+    // Drafts changed while the town was asked (a send ran, words were kept) keep their newest state;
+    // only those the town's answer settled leave.
+    await update($, town, current => ({ ...looked.view, drafts: keptDrafts(before, looked.view, current ?? NO_TOWN) }))
+    townToasts($, looked.toasts)
+  } catch {
+    // The town is an extra: it never breaks the sweep, and says nothing when it is not there.
+  }
+}
+
+const keptDrafts = (before: TownView, after: TownView, current: TownView) =>
+  Object.fromEntries(Object.entries(current.drafts).filter(([id, draft]) => draft.state === 'sending' || !(id in before.drafts) || id in after.drafts))
+
+/** Sends one answer to the town by hand, once; whatever happens, it is never resent by itself. */
+const sendTownAnswer = async ($: EngineInterface, id: string, answer: string | null) => {
+  const view = await read($, town)
+  const port = view.discovery?.port
+  const title = view.overview?.steps.find(step => step.id === id)?.title ?? view.drafts[id]?.title
+  if (port === undefined || title === undefined || view.drafts[id]?.state === 'sending') return
+  await update($, town, current => {
+    const now = current ?? NO_TOWN
+
+    return { ...now, drafts: { ...now.drafts, [id]: { title, words: now.drafts[id]?.words ?? '', answer, state: 'sending' } } }
+  })
+  const sent = await sendAnswer($, port, id, answer)
+  const at = await $.clock.now()
+  let toasts: string[] = []
+  await update($, town, current => {
+    const settled = settleAnswer(current ?? NO_TOWN, id, answer, sent, at)
+    toasts = settled.toasts
+
+    return settled.view
+  })
+  townToasts($, toasts)
+}
+
+/** A tick, a choice (with the words kept for it), or typed words, as the town takes them. */
+const answerTownStep = async ($: EngineInterface, step: TownStep, choice: string | null, typed?: string) => {
+  if (step.kind === 'tick') return sendTownAnswer($, step.id, null)
+  const words = typed ?? (await read($, town)).drafts[step.id]?.words ?? ''
+  const answer = step.kind === 'pick' ? pickAnswer(choice, words) : words.trim()
+  if (answer === '') {
+    await update($, town, current => {
+      const now = current ?? NO_TOWN
+
+      return { ...now, drafts: { ...now.drafts, [step.id]: { title: step.title, words, state: 'editing', problem: step.kind === 'pick' ? 'Pick one of the choices or write an answer.' : 'Type an answer.' } } }
+    })
+
+    return
+  }
+  await sendTownAnswer($, step.id, answer.slice(0, 2000))
+}
+
+/** A pick's own words, kept in memory until a choice sends them. */
+const keepTownWords = async ($: EngineInterface, step: TownStep, words: string) => {
+  await update($, town, current => {
+    const now = current ?? NO_TOWN
+
+    return { ...now, drafts: { ...now.drafts, [step.id]: { title: step.title, words: words.trim(), state: 'editing' } } }
+  })
+}
+
+/** « Send again »: the answer the town did not take, sent once more by the person. */
+const resendTownAnswer = async ($: EngineInterface, id: string) => {
+  const draft = (await read($, town)).drafts[id]
+  if (draft?.state === 'not_sent' && draft.answer !== undefined) await sendTownAnswer($, id, draft.answer)
+}
+
 const sweep = async ($: EngineInterface) => {
+  await refreshTown($)
   const list = await loadYourSteps($)
   await loadOtherProjects($)
   await refreshHelpers($)
@@ -1786,6 +1866,7 @@ export const register: Register = (on, options) => {
     const openBriefs = await read($, openTasks)
     const draft = await read($, ideaDraft)
     const missed = await read($, recap)
+    const townView = await read($, town)
     // Drawings go where a surface draws them; the terminal keeps to text and glyphs.
     const Svg = e.surface !== 'terminal' && 'Svg' in table ? table.Svg : undefined
     const isOpenSection = (part: string) => folds[part] ?? SECTION_DEFAULTS[part] ?? false
@@ -2577,6 +2658,189 @@ export const register: Register = (on, options) => {
           ])
         : null
 
+    // ── FROM YOUR TOWN: a local Clauverwatch town's open steps and waiting gates ─────────────
+    // Shown only while a town answers, or an answer is still held; its items count nowhere else.
+    const townStepRow = (step: TownStep) => {
+      const draft = townView.drafts[step.id]
+      const isSending = draft?.state === 'sending'
+      const kind = step.kind
+      const dates = [step.decideBy !== null ? `answer by ${plainDate(step.decideBy)}` : '', step.due !== null ? `due ${plainDate(step.due)}` : ''].filter(Boolean).join(' · ')
+      const isMoreOpen = open.includes(`town-more:${step.id}`)
+
+      return (
+        <Box key={`town-step:${step.id}`} flexDirection="column" marginTop={1}>
+          <Box key={`town-line:${step.id}`} flexDirection="row">
+            <Text color={kind === 'pick' ? TONE.call.color : kind === 'type' ? TONE.note.color : undefined}>{kind === 'pick' ? '◆ ' : kind === 'type' ? '⌨ ' : '☐ '}</Text>
+            <Box key={`town-title:${step.id}`} flexGrow={1} flexShrink={1}>
+              <Text bold wrap="wrap">
+                {step.title}
+              </Text>
+            </Box>
+            <Text dimColor> {step.id}</Text>
+          </Box>
+          <Box key={`town-about:${step.id}`} flexDirection="column" paddingLeft={2}>
+            <Text dimColor wrap="wrap">
+              {askedLine(step)}
+            </Text>
+            {step.council && (
+              <Text color={TONE.plan.color} wrap="wrap">
+                For the town council
+              </Text>
+            )}
+            {dates !== '' && (
+              <Text color={TONE.soon.color} wrap="wrap">
+                ⏱ {dates}
+              </Text>
+            )}
+            {step.status === 'reopened' && (
+              <Text color="warning" wrap="wrap">
+                ↺ Reopened: {step.reopenNote ?? 'the asker needs more'}
+              </Text>
+            )}
+            {kind === 'type' && step.asks !== null && (
+              <Text dimColor wrap="wrap">
+                Asks: {step.asks}
+              </Text>
+            )}
+            {step.more.trim() !== '' && (
+              <Button key={`fold:town-more:${step.id}`} plain dimColor={!isMoreOpen} label={isMoreOpen ? `Hide the details of town step ${step.id}` : `Show the details of town step ${step.id}`} onPress={() => toggleFold($, `town-more:${step.id}`)}>
+                {isMoreOpen ? '▾ Less' : '▸ Details'}
+              </Button>
+            )}
+            {isMoreOpen && step.more.trim() !== '' && (
+              <Box key={`town-more-card:${step.id}`} flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1}>
+                <Markdown key={`town-more-text:${step.id}`} text={step.moreCut ? `${step.more}…` : step.more} />
+              </Box>
+            )}
+          </Box>
+          <Box key={`town-controls:${step.id}`} flexDirection="column" paddingLeft={2}>
+            {draft?.state === 'not_sent' && (
+              <Text color="warning" wrap="wrap">
+                Not sent: the town did not answer. Send it again when you are ready.
+              </Text>
+            )}
+            {isSending ? (
+              <Text color={TONE.note.color} wrap="wrap">
+                Sending…
+              </Text>
+            ) : kind === 'tick' ? (
+              <Box key={`town-tick-at:${step.id}`}>
+                <Button key={`town-tick:${step.id}`} plain label={`Answer town step ${step.id}: done`} onPress={() => answerTownStep($, step, null)}>
+                  ☐ Done
+                </Button>
+              </Box>
+            ) : kind === 'pick' ? (
+              <Box key={`town-pick-at:${step.id}`} flexDirection="column">
+                <Box key={`town-choices:${step.id}`} flexDirection="row" flexWrap="wrap" columnGap={2}>
+                  {step.choices.map((choice, index) => (
+                    <Button key={`town-pick:${step.id}:${index}`} plain label={`Answer town step ${step.id}, pick: ${choice}`} onPress={() => answerTownStep($, step, choice)}>
+                      {`○ ${choice}${choice === step.defaultChoice ? ' (default; never applied by itself)' : ''}`}
+                    </Button>
+                  ))}
+                </Box>
+                {(draft?.words ?? '') !== '' && (
+                  <Box key={`town-words-kept:${step.id}`} flexDirection="column">
+                    <Text wrap="wrap">
+                      <Text dimColor>Own words: </Text>« {draft?.words} »<Text dimColor> · sent with the choice you pick</Text>
+                    </Text>
+                    <Button key={`town-words-send:${step.id}`} plain label={`Answer town step ${step.id} with your own words alone`} onPress={() => answerTownStep($, step, null)}>
+                      ↗ Send your words alone
+                    </Button>
+                  </Box>
+                )}
+                {Input !== undefined && (
+                  <Input key={`town-words:${step.id}`} label={`Own words for town step ${step.id}`} placeholder="Own words (optional)…" submitLabel="keep" onSubmit={words => keepTownWords($, step, words)} />
+                )}
+              </Box>
+            ) : Input !== undefined ? (
+              <Input
+                key={`town-answer:${step.id}`}
+                label={`Answer town step ${step.id}`}
+                placeholder={`${step.asks ?? 'Your answer'}…`}
+                value={draft?.answer ?? undefined}
+                submitLabel="send to the town"
+                onSubmit={words => answerTownStep($, step, null, words)}
+              />
+            ) : (
+              <Text dimColor wrap="wrap">
+                Answer it in the town.
+              </Text>
+            )}
+            {draft?.problem !== undefined && !isSending && (
+              <Text color="error" wrap="wrap">
+                ⚠ {draft.problem}
+              </Text>
+            )}
+          </Box>
+        </Box>
+      )
+    }
+    const townGateRow = (gate: TownGate, url: string) => (
+      <Box key={`town-gate:${gate.id}`} flexDirection="column" marginTop={1}>
+        <Text wrap="wrap">
+          <Text color={TONE.waiting.color}>◐ </Text>
+          Waiting at the City Gate: {gate.classLabel}
+          {gate.errand !== null ? ` · ${gate.errand.id} ${gate.errand.title}` : ''} ({gate.id})
+        </Text>
+        <Box key={`town-gate-about:${gate.id}`} flexDirection="column" paddingLeft={2}>
+          <Text dimColor wrap="wrap">
+            {gate.why}
+          </Text>
+          {gate.macOnly && (
+            <Text dimColor wrap="wrap">
+              Only on the Mac
+            </Text>
+          )}
+          <Box key={`town-gate-do:${gate.id}`} flexDirection="row" flexWrap="wrap" columnGap={2}>
+            <Text dimColor wrap="wrap">
+              Read-only gate · Decide it in the town.
+            </Text>
+            <Button key={`town-open:${gate.id}`} plain label={`Open the town to decide gate ${gate.id}`} onPress={() => openTown($, url)}>
+              ↗ Open the town
+            </Button>
+          </Box>
+        </Box>
+      </Box>
+    )
+    const held = heldDrafts(townView)
+    const townOverview = townView.phase === 'present' ? townView.overview : null
+    const townMore = (townOverview?.moreSteps ?? 0) + (townOverview?.moreGates ?? 0)
+    const townPart = !isShown(townView)
+      ? null
+      : townOverview === null
+        ? section('town', 'move', 'soon', 'From your town · not answering', undefined, () => [
+            ...held.map(([id, kept]) => (
+              <Box key={`town-held:${id}`} flexDirection="column" marginTop={1}>
+                <Text color={TONE.soon.color} wrap="wrap">
+                  Your town stopped answering. Your unsent answer for {kept.title} is kept until this session ends.
+                </Text>
+                {kept.state === 'not_sent' && (
+                  <Box key={`town-held-do:${id}`} flexDirection="row" flexWrap="wrap" columnGap={2} paddingLeft={2}>
+                    <Text color="warning" wrap="wrap">
+                      Not sent: the town did not answer.
+                    </Text>
+                    {townView.discovery !== null && (
+                      <Button key={`town-resend:${id}`} plain label={`Send your answer to town step ${id} again`} onPress={() => resendTownAnswer($, id)}>
+                        ↻ Send again
+                      </Button>
+                    )}
+                  </Box>
+                )}
+              </Box>
+            )),
+          ])
+        : section('town', 'move', townOverview.steps.length > 0 ? 'call' : 'waiting', headLine(townOverview), undefined, () => [
+            ...townOverview.steps.map(townStepRow),
+            ...townOverview.gates.map(gate => townGateRow(gate, townOverview.town.url)),
+            townMore > 0 && (
+              <Box key="town-more-count" marginTop={1}>
+                <Text dimColor wrap="wrap">
+                  and {townMore} more in the town
+                </Text>
+              </Box>
+            ),
+          ])
+
     // ── UP NEXT: the person's queue of ideas and tasks ────────────────────────────────────
     const pending = pendingTasks(tasks.tasks)
     const finishedTasks = doneTasks(tasks.tasks)
@@ -2963,6 +3227,7 @@ export const register: Register = (on, options) => {
         {countdown}
         {crewPart}
         {movePart}
+        {townPart}
         {queuePart}
         {goalsPart}
         {recentPart}

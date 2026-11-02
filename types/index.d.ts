@@ -254,6 +254,88 @@ export type SessionCard = {
   crew?: CrewMember[]
 }
 
+/** An errand or a neighborhood a town item belongs to. */
+export type TownErrand = { id: string; title: string }
+export type TownHood = { slug: string; name: string }
+
+/** One open step of a local Clauverwatch town, as its visitor door lists it. */
+export type TownStep = {
+  id: string
+  kind: 'tick' | 'pick' | 'type'
+  title: string
+  more: string
+  moreCut: boolean
+  choices: string[]
+  defaultChoice: string | null
+  asks: string | null
+  decideBy: string | null
+  due: string | null
+  askedBy: string
+  errand: TownErrand | null
+  neighborhood: TownHood | null
+  status: 'open' | 'reopened'
+  reopenNote: string | null
+  council: boolean
+  createdAt: string
+}
+
+/** One gate waiting in the town: shown, never decided from the pane. */
+export type TownGate = {
+  id: string
+  class: string
+  classLabel: string
+  macOnly: boolean
+  errand: TownErrand | null
+  neighborhood: TownHood | null
+  why: string
+  createdAt: string
+}
+
+/** What the town's `GET /outside/overview` answers (api 1). */
+export type TownOverview = {
+  api: 1
+  town: { name: string; url: string; startedAt: string }
+  steps: TownStep[]
+  moreSteps: number
+  gates: TownGate[]
+  moreGates: number
+}
+
+/** What the town's discovery file says, once checked. */
+export type TownDiscovery = { port: number; startedAt: string }
+
+/** An answer on its way to the town: words kept for a pick, a send running, or a send the town did not take. */
+export type TownDraft = {
+  title: string
+  /** A pick's own words, kept until a choice or « Send your words alone » sends them. */
+  words: string
+  /** The answer as last sent (null for a tick). */
+  answer?: string | null
+  state: 'editing' | 'sending' | 'not_sent'
+  /** The town's own words when it refused the answer (an empty pick or type). */
+  problem?: string
+}
+
+/**
+ * The town, as this session last saw it. Kept in memory only, never in the store: the town imports
+ * the store's steps, so a town item written there would come back to it as a step of its own.
+ */
+export type TownView = {
+  /** `off`: no home folder, nothing is tried this session; `absent`: no town; `failing`: it did not answer. */
+  phase: 'off' | 'absent' | 'present' | 'failing'
+  discovery: TownDiscovery | null
+  /** The last good answer of the town. */
+  overview: TownOverview | null
+  /** When the discovery file was last read (null: never). */
+  readAt: number | null
+  /** No request before this clock time, after a failure. */
+  retryAt: number
+  /** `<startedAt>|<reason>` already logged, one debug line each. */
+  logged: string[]
+  /** By step id. */
+  drafts: Record<string, TownDraft>
+}
+
 /** One line of what was done for a goal; repeats of the same line are counted. */
 export type Action = { label: string; count: number; failed?: boolean }
 
@@ -324,6 +406,8 @@ declare module 'claude-code' {
       recap: Recap | null
       /** The session that looked for a recap: a reload of the same session never makes a second one. */
       recapCheckedIn: string
+      /** The local Clauverwatch town's open steps and waiting gates, in memory only. */
+      town: TownView
     }
   }
 }

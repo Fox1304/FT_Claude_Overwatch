@@ -1,0 +1,109 @@
+{
+  "api": 1,
+  "town": {
+    "name": "Clauverwatch",
+    "url": "http://127.0.0.1:52100/",
+    "startedAt": "2026-11-02T08:00:00.000Z"
+  },
+  "steps": [
+    {
+      "id": "S-0101",
+      "kind": "tick",
+      "title": "Turn on two-factor sign-in for the store account",
+      "more": "The store asks for it before the next release.",
+      "moreCut": false,
+      "choices": [],
+      "defaultChoice": null,
+      "asks": null,
+      "decideBy": null,
+      "due": "2026-11-04T12:00:00.000Z",
+      "askedBy": "The Mayor",
+      "errand": { "id": "E-0201", "title": "Prepare the store release" },
+      "neighborhood": { "slug": "sample-app", "name": "Sample app" },
+      "status": "open",
+      "reopenNote": null,
+      "council": false,
+      "createdAt": "2026-11-01T09:00:00.000Z"
+    },
+    {
+      "id": "S-0102",
+      "kind": "pick",
+      "title": "Which launch day do you want?",
+      "more": "",
+      "moreCut": false,
+      "choices": ["Tuesday", "Thursday"],
+      "defaultChoice": "Thursday",
+      "asks": null,
+      "decideBy": "2026-11-05T18:00:00.000Z",
+      "askedBy": "The Merchant",
+      "errand": null,
+      "neighborhood": { "slug": "sample-app", "name": "Sample app" },
+      "status": "open",
+      "reopenNote": null,
+      "council": false,
+      "createdAt": "2026-11-01T10:00:00.000Z"
+    },
+    {
+      "id": "S-0103",
+      "kind": "type",
+      "title": "Give the support address for the store page",
+      "more": "",
+      "moreCut": false,
+      "choices": [],
+      "defaultChoice": null,
+      "asks": "An email address",
+      "decideBy": null,
+      "due": null,
+      "askedBy": "The Architect",
+      "errand": { "id": "E-0202", "title": "Write the store page" },
+      "neighborhood": null,
+      "status": "reopened",
+      "reopenNote": "That address bounced; give another one.",
+      "council": false,
+      "createdAt": "2026-11-01T11:00:00.000Z"
+    },
+    {
+      "id": "S-0104",
+      "kind": "pick",
+      "title": "Should the town keep its weekly audit?",
+      "more": "",
+      "moreCut": false,
+      "choices": ["Keep it", "Stop it"],
+      "defaultChoice": null,
+      "asks": null,
+      "decideBy": null,
+      "due": null,
+      "askedBy": "The Town Council",
+      "errand": null,
+      "neighborhood": null,
+      "status": "open",
+      "reopenNote": null,
+      "council": true,
+      "createdAt": "2026-11-01T12:00:00.000Z"
+    }
+  ],
+  "moreSteps": 0,
+  "gates": [
+    {
+      "id": "G-0101",
+      "class": "publish",
+      "classLabel": "Publish",
+      "macOnly": false,
+      "errand": { "id": "E-0201", "title": "Prepare the store release" },
+      "neighborhood": { "slug": "sample-app", "name": "Sample app" },
+      "why": "The release notes are ready to go out.",
+      "createdAt": "2026-11-02T07:00:00.000Z"
+    },
+    {
+      "id": "G-0102",
+      "class": "store",
+      "classLabel": "Store submission",
+      "macOnly": true,
+      "errand": null,
+      "neighborhood": { "slug": "sample-app", "name": "Sample app" },
+      "why": "The build waits for review submission.",
+      "createdAt": "2026-11-02T07:30:00.000Z"
+    }
+  ],
+  "moreGates": 0
+}

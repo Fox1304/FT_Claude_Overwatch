@@ -56,6 +56,17 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
   /** OS notifications raised, and whether the terminal has a channel for them. */
   const notified: { title?: string; text: string }[] = []
   const os = { canNotify: true }
+  /** Files the engine reads, by absolute path; any other path reads as empty, as before. */
+  const files: Record<string, string> = {}
+  /**
+   * A stand-in for a local town's visitor door, off by default: each curl call is recorded and
+   * answered by `town.reply` (the status, the body, and curl's exit code: 7 refused, 28 timed out).
+   */
+  const curls: string[][] = []
+  const opened: string[][] = []
+  const town: { reply: (argv: string[]) => { exitCode?: number; status?: number; body?: string } } = {
+    reply: () => ({ exitCode: 7 }),
+  }
   on('store.get', ($, e) => ({ value: stored[e.key] }))
   on('store.set', ($, e) => {
     stored[e.key] = e.value
@@ -86,7 +97,7 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
   on('agent.list', () => ({ value: agents }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('turn.complete', ($, e) => ({ text: e.answer }))
-  on('fs.read', () => ({ value: '' }))
+  on('fs.read', ($, e) => ({ value: files[String(e.path)] ?? '' }))
   on('model.complete', ($, e) => {
     const prompt = String(e.prompt)
     reads.push({ model: e.model, prompt })
@@ -102,6 +113,18 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
     return { text: e.text }
   })
   on('process.run', ($, e) => {
+    const argv = e.argv.map(String)
+    if (argv[0] === '/usr/bin/curl') {
+      curls.push(argv)
+      const { exitCode = 0, status = 200, body = '' } = town.reply(argv)
+
+      return { value: { exitCode, stdout: exitCode === 0 ? `${body}\n${status}` : '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
+    if (argv[0] === '/usr/bin/open') {
+      opened.push(argv)
+
+      return { value: { exitCode: 0, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+    }
     const root = e.argv[0] === 'git' && e.argv[1] === '-C' ? String(e.argv[2]) : ''
     const stdout = git[root]
 
@@ -128,5 +151,5 @@ export const world = (on: On, options: { failPrompts?: { now: boolean } } = {}) 
 
   const queued = () => ((stored['queue:/work/myapp'] as { tasks?: QueueTask[] } | undefined)?.tasks ?? []) as QueueTask[]
 
-  return { stored, prompts, phone, toasts, logs, agents, me, replies, reads, git, notified, os, queued, steps: () => stepsAt(KEY), stepsAt }
+  return { stored, prompts, phone, toasts, logs, agents, me, replies, reads, git, notified, os, files, curls, opened, town, queued, steps: () => stepsAt(KEY), stepsAt }
 }

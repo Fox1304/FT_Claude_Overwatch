@@ -90,9 +90,18 @@ Set them in `/config` (or under `pluginConfigs` in `~/.claude/settings.json`):
 | `phoneAlerts` | `true` | Phone alerts for new or reopened steps, and daily reminders. |
 | `autoStartSeconds` | `60` | How long the pane counts down before it starts the next queued task by itself. `0`: only with « Start now ». |
 
+### A local Clauverwatch town (optional)
+
+If you run a local Clauverwatch town on your Mac, the pane adds a **From your town** section right after Your move. It lists the town's open steps and the gates waiting for you:
+
+- **Steps** are answered from the pane as in the town: a tick (« Done »), a pick (one button per choice, with optional own words sent as « choice — your words »), or typed words. The step leaves the pane once the town has it, and a step you answered in the town leaves the pane at its next refresh (within 10 seconds). If the town already had an answer, the pane says so and removes the step. If the town stops answering mid-send, your answer stays marked « Not sent » until the session ends, and is only sent again when you press it.
+- **Gates** are read-only: each one says what waits and why, with « Open the town » to decide it there. The pane has no control that approves or denies a gate.
+
+**It is off when no town runs.** The mod looks for the file a running town writes in `~/.clauverwatch/` (at most once a minute); without it, the pane is exactly as before: no section, no request, no message. With a town running, the pane asks it once per refresh, on `127.0.0.1` only, through `/usr/bin/curl`, with no key, cookie or password. Town steps and answers stay in memory: nothing about them is written to the mod's store, and they count nowhere else in the pane (no mood, alert or reminder). On Windows and Linux the section never appears.
+
 ## Your data
 
-Everything stays on your machine, in Claude Code's own plugin store (`~/.claude/plugins/store/`): your steps and your queue per repository, the project map, the recent-changes feed, the activity log and your last visit (for « What did you miss »), the session cards that let your sessions see each other and their helpers, the sections you keep open, and the notes waiting for another session to read them. The recap reads each known repository's commits with a local `git log`. Nothing is sent anywhere except to Claude in your own sessions (reading a dropped idea is one Claude Sonnet call through your session, with the start of the project's `CLAUDE.md`, and counts toward your usage), and to your phone through Claude Code's notifications when you turn them on.
+Everything stays on your machine, in Claude Code's own plugin store (`~/.claude/plugins/store/`): your steps and your queue per repository, the project map, the recent-changes feed, the activity log and your last visit (for « What did you miss »), the session cards that let your sessions see each other and their helpers, the sections you keep open, and the notes waiting for another session to read them. The recap reads each known repository's commits with a local `git log`. Nothing is sent anywhere except to Claude in your own sessions (reading a dropped idea is one Claude Sonnet call through your session, with the start of the project's `CLAUDE.md`, and counts toward your usage), to your phone through Claude Code's notifications when you turn them on, and, when you answer a town step, to your own local town on this machine.
 
 ## Development
 
@@ -109,6 +118,7 @@ claude plugin test .
 | `hooks/goals.ts`, `your-steps.ts`, `map.ts`, `notes.ts`, `activity.ts`, `routing.ts` | pure logic for goals, steps, the map, notes, the per-goal history and which session hears what |
 | `hooks/queue.ts` | the queue: reading an idea, its questions and brief, order, hold, Claude's queue tool |
 | `hooks/draw.ts` | the drawings: Claude's avatar and progress ring, the helpers' avatars, the section icons |
+| `hooks/town.ts` | a local Clauverwatch town, if one runs: finding it, reading its open steps and gates, sending answers; no store access |
 | `types/index.d.ts` | the shapes of the mod's state |
 | `tests/` | engine tests, with `world.ts` standing in for the store, the clock and Claude |
 
