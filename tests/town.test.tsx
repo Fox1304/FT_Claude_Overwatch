@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 
 import { answerArgv, overviewArgv, parseDiscovery, parseOverview, pickAnswer, splitReply } from '../hooks/town'
-import fixture from './fixtures/town-overview-v1.json'
+import { overviewV1 as fixture } from './fixtures/town-overview-v1'
 import { PANE, allText, world } from './world'
 
 const MORNING = new Date(2026, 10, 2, 9, 0).getTime()

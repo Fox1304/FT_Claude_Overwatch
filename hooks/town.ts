@@ -156,7 +156,7 @@ export const splitReply = (stdout: string): { status: number; body: string } => 
 
 type Ran = { exitCode: number; stdout: string; isStdoutTruncated?: boolean }
 
-const run = async ($: EngineInterface, argv: string[], timeoutMs: number): Promise<Ran | null> => {
+async function run($: EngineInterface, argv: string[], timeoutMs: number): Promise<Ran | null> {
   try {
     return (await $.process.run(argv, { timeoutMs })) as Ran
   } catch {
@@ -201,7 +201,7 @@ export const isShown = (view: TownView) =>
     ? view.overview.steps.length + view.overview.gates.length + view.overview.moreSteps + view.overview.moreGates > 0 || heldDrafts(view).length > 0
     : heldDrafts(view).length > 0
 
-const logOnce = ($: EngineInterface, view: TownView, startedAt: string, reason: string): TownView => {
+function logOnce($: EngineInterface, view: TownView, startedAt: string, reason: string): TownView {
   const mark = `${startedAt}|${reason}`
   if (view.logged.includes(mark)) return view
   $.ui.log(`overview: the local town did not answer (${reason})`, { to: 'debug' })
@@ -226,7 +226,7 @@ const takeOverview = (view: TownView, overview: TownOverview): { view: TownView;
  * One sweep's look at the town: read the discovery file (at most once a minute while there is no town),
  * then at most one request. Quiet when there is no town: no request, no log, no toast.
  */
-export const lookAtTown = async ($: EngineInterface, view: TownView, now: number): Promise<{ view: TownView; toasts: string[] }> => {
+export async function lookAtTown($: EngineInterface, view: TownView, now: number): Promise<{ view: TownView; toasts: string[] }> {
   if (view.phase === 'off') return { view, toasts: [] }
   const home = homeFolder()
   if (home === null) return { view: { ...view, phase: 'off', overview: null }, toasts: [] }
@@ -245,21 +245,28 @@ export const lookAtTown = async ($: EngineInterface, view: TownView, now: number
   const seen: TownView = { ...view, discovery, readAt: now }
   if (view.phase === 'failing' && !isRestarted && now < view.retryAt) return { view: seen, toasts: [] }
 
-  const fail = (reason: string) => ({
-    view: logOnce($, { ...seen, phase: 'failing' as const, overview: null, retryAt: now + QUIET_MS }, discovery.startedAt, reason),
-    toasts: [],
-  })
-  const ran = await run($, overviewArgv(discovery.port), 2500)
-  if (ran === null) return fail('curl did not run')
-  if (ran.exitCode !== 0) return fail(`curl exit ${ran.exitCode}`)
-  if (ran.isStdoutTruncated === true) return fail('answer too long')
-  const reply = splitReply(ran.stdout)
-  if (reply.status !== 200) return fail(`HTTP ${reply.status}`)
-  const overview = parseOverview(reply.body)
-  if (overview === null) return fail('unreadable answer')
-  if (overview.town.startedAt !== discovery.startedAt) return fail('another program on its port')
+  const looked = readProbe(await run($, overviewArgv(discovery.port), 2500), discovery.startedAt)
+  if (typeof looked === 'string') {
+    const failing: TownView = { ...seen, phase: 'failing', overview: null, retryAt: now + QUIET_MS }
 
-  return takeOverview(seen, overview)
+    return { view: logOnce($, failing, discovery.startedAt, looked), toasts: [] }
+  }
+
+  return takeOverview(seen, looked)
+}
+
+/** The probe's overview, or the reason it failed. */
+const readProbe = (ran: Ran | null, startedAt: string): TownOverview | string => {
+  if (ran === null) return 'curl did not run'
+  if (ran.exitCode !== 0) return `curl exit ${ran.exitCode}`
+  if (ran.isStdoutTruncated === true) return 'answer too long'
+  const reply = splitReply(ran.stdout)
+  if (reply.status !== 200) return `HTTP ${reply.status}`
+  const overview = parseOverview(reply.body)
+  if (overview === null) return 'unreadable answer'
+  if (overview.town.startedAt !== startedAt) return 'another program on its port'
+
+  return overview
 }
 
 /** How a send ended. */
@@ -271,7 +278,7 @@ export type Sent =
   | { kind: 'refused'; message: string }
 
 /** Sends one answer through the door; never resent by itself. */
-export const sendAnswer = async ($: EngineInterface, port: number, id: string, answer: string | null): Promise<Sent> => {
+export async function sendAnswer($: EngineInterface, port: number, id: string, answer: string | null): Promise<Sent> {
   const ran = await run($, answerArgv(port, id, answer), 4000)
   if (ran === null || ran.exitCode !== 0) return { kind: 'down' }
   const reply = splitReply(ran.stdout)
@@ -339,7 +346,7 @@ export const settleAnswer = (view: TownView, id: string, answer: string | null, 
 }
 
 /** Opens the town's own page in the browser, where gates are decided. */
-export const openTown = async ($: EngineInterface, url: string) => {
+export async function openTown($: EngineInterface, url: string) {
   if (!/^http:\/\/127\.0\.0\.1:\d{4,5}\/$/.test(url)) return
   await run($, [OPEN, url], 5000)
 }
