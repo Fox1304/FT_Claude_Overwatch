@@ -19,9 +19,17 @@ export const ANSWER_CHARS = 2000
 
 export const NO_TOWN: TownView = { phase: 'absent', discovery: null, overview: null, readAt: null, retryAt: 0, logged: [], drafts: {} }
 
-/** The person's home folder, from the environment; none when it is not an absolute path. */
-export const homeFolder = (): string | null => {
-  const home = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.HOME
+/**
+ * The person's home folder, asked of the engine (hook code has no `process` of its own); none when
+ * it is unset, not an absolute path, or cannot be read.
+ */
+export async function homeFolder($: EngineInterface): Promise<string | null> {
+  let home: string | undefined
+  try {
+    home = await $.env.get('HOME')
+  } catch {
+    return null
+  }
 
   return typeof home === 'string' && home.startsWith('/') ? home.replace(/\/+$/, '') : null
 }
@@ -228,7 +236,7 @@ const takeOverview = (view: TownView, overview: TownOverview): { view: TownView;
  */
 export async function lookAtTown($: EngineInterface, view: TownView, now: number): Promise<{ view: TownView; toasts: string[] }> {
   if (view.phase === 'off') return { view, toasts: [] }
-  const home = homeFolder()
+  const home = await homeFolder($)
   if (home === null) return { view: { ...view, phase: 'off', overview: null }, toasts: [] }
   if (view.phase === 'absent' && view.readAt !== null && now - view.readAt < QUIET_MS) return { view, toasts: [] }
 

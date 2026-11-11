@@ -11,7 +11,7 @@ const START = { cwd: '/work/myapp-worktree', surface: 'terminal', isInteractive:
 const BAND = {
   plugin: 'overview',
   component: 'AbovePrompt',
-  props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 90, scroll: { offset: 0, bodyRows: 30 }, view: {} },
+  props: { hasSurvey: false, isCollapsed: false, isWorking: false, maxRows: 30, bodyColumns: 90, scroll: { offset: 0, bodyRows: 30 }, view: {} },
 } as const
 const seconds = (at: number) => Math.round(at / 1000)
 

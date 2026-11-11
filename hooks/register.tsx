@@ -1086,7 +1086,7 @@ const sendTownAnswer = async ($: EngineInterface, id: string, answer: string | n
   const port = view.discovery?.port
   const title = view.overview?.steps.find(step => step.id === id)?.title ?? view.drafts[id]?.title
   if (port === undefined || title === undefined || view.drafts[id]?.state === 'sending') return
-  await update($, town, current => {
+  await update($, town, (current): TownView => {
     const now = current ?? NO_TOWN
 
     return { ...now, drafts: { ...now.drafts, [id]: { title, words: now.drafts[id]?.words ?? '', answer, state: 'sending' } } }
@@ -1109,7 +1109,7 @@ const answerTownStep = async ($: EngineInterface, step: TownStep, choice: string
   const words = typed ?? (await read($, town)).drafts[step.id]?.words ?? ''
   const answer = step.kind === 'pick' ? pickAnswer(choice, words) : words.trim()
   if (answer === '') {
-    await update($, town, current => {
+    await update($, town, (current): TownView => {
       const now = current ?? NO_TOWN
 
       return { ...now, drafts: { ...now.drafts, [step.id]: { title: step.title, words, state: 'editing', problem: step.kind === 'pick' ? 'Pick one of the choices or write an answer.' : 'Type an answer.' } } }
@@ -1122,7 +1122,7 @@ const answerTownStep = async ($: EngineInterface, step: TownStep, choice: string
 
 /** A pick's own words, kept in memory until a choice sends them. */
 const keepTownWords = async ($: EngineInterface, step: TownStep, words: string) => {
-  await update($, town, current => {
+  await update($, town, (current): TownView => {
     const now = current ?? NO_TOWN
 
     return { ...now, drafts: { ...now.drafts, [step.id]: { title: step.title, words: words.trim(), state: 'editing' } } }
